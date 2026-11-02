@@ -3,6 +3,11 @@
 A shared coding-agent setup: the rules, the gate reviewers, the general skills and commands. Everything here
 works for any project. Project-specific skills stay in their own repos.
 
+> **Start here: read [`docs/prompt-to-mr.html`](docs/prompt-to-mr.html) before using the kit.** It walks
+> through every step from the prompt you type to an open merge request, and the rule behind each step, so you
+> know what the agent and the gates will do. GitHub shows `.html` files as code, so open it in a browser after
+> cloning.
+
 ## Rules: two files
 
 | file | what it holds | in Claude Code it becomes |
@@ -34,9 +39,6 @@ The kit has two layers:
 | `core/commands/` | `productionize`, `throwaway`, `resume-handoff` prompts; `$ARGUMENTS` is the user's text |
 
 Skills and reviewers are grouped by topic folder. Names must be unique across topics.
-
-`docs/prompt-to-mr.html` walks through the whole flow, from your prompt to an open MR, with the rule behind
-each step. Open it in a browser.
 
 **How any agent runs a gate review.** `gate.py` (in the `gate` skill) picks the reviewers and writes one prompt
 file per reviewer. Each dispatch entry has an `agent_name`, a `model_tier` (`light`, `standard` or `strong`;
