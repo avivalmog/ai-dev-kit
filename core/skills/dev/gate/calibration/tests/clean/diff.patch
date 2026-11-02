@@ -1,0 +1,18 @@
+--- a/pricing.py
++++ b/pricing.py
+@@ -2,5 +2,5 @@
+ 
+ 
+ def discount(price: float, amount: float) -> float:
+-    """Price after subtracting `amount`."""
+-    return price - amount
++    """Price after subtracting `amount`, never below zero."""
++    return max(price - amount, 0.0)
+--- a/tests/test_pricing.py
++++ b/tests/test_pricing.py
+@@ -6,4 +6,4 @@
+ 
+ 
+ def test_discount_past_zero():
+-    assert discount(10.0, 15.0) == -5.0
++    assert discount(10.0, 15.0) == 0.0

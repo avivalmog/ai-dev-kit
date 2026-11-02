@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Prompt to MR</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<style>
+/* Layout: a sticky stage rail on the left (desktop) beside one long column of stage cards; stacks on phones. */
+:root {
+  --bg: #f5f6f8; --surface: #ffffff; --ink: #1b2230; --muted: #5b6577; --line: #dde1e8; --code-bg: #eef1f5;
+  --accent: #2f5bd3;
+  --you: #b45309; --you-bg: #fdf1e3;
+  --agent: #2f5bd3; --agent-bg: #e9effd;
+  --engine: #6d3fc0; --engine-bg: #f1ebfb;
+  --hook: #b42318; --hook-bg: #fdecea;
+  --rev: #0f7a6c; --rev-bg: #e3f4f1;
+  --stop: #b45309; --pass: #1d7a3a; --pass-bg: #e6f4ea;
+  --f-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #12161d; --surface: #1a2029; --ink: #e6e9ef; --muted: #9aa4b5; --line: #2c3442; --code-bg: #222a35;
+  --accent: #8aa8ff;
+  --you: #f2a65a; --you-bg: #3a2a17; --agent: #8aa8ff; --agent-bg: #1f2a45;
+  --engine: #b79af0; --engine-bg: #2c2240; --hook: #f08a80; --hook-bg: #3d1f1d;
+  --rev: #5cc9b8; --rev-bg: #143430; --stop: #f2a65a; --pass: #6fcf8b; --pass-bg: #173322;
+  color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #12161d; --surface: #1a2029; --ink: #e6e9ef; --muted: #9aa4b5; --line: #2c3442; --code-bg: #222a35;
+  --accent: #8aa8ff;
+  --you: #f2a65a; --you-bg: #3a2a17; --agent: #8aa8ff; --agent-bg: #1f2a45;
+  --engine: #b79af0; --engine-bg: #2c2240; --hook: #f08a80; --hook-bg: #3d1f1d;
+  --rev: #5cc9b8; --rev-bg: #143430; --stop: #f2a65a; --pass: #6fcf8b; --pass-bg: #173322;
+  color-scheme: dark }
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 15px/1.6 var(--f-body); }
+.wrap { max-width: 1180px; margin: 0 auto; padding-block: 40px 80px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+h1, h2, h3 { font-family: var(--f-display); text-wrap: balance; line-height: 1.2; margin: 0; }
+h1 { font-size: clamp(2rem, 4vw, 2.75rem); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 1.5rem; font-weight: 600; }
+h3 { font-size: 1.05rem; font-weight: 600; }
+p { margin: 0; max-width: 72ch; }
+code, .mono { font-family: var(--f-mono); font-size: 0.86em; }
+code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+a { color: var(--accent); }
+.muted { color: var(--muted); }
+.eyebrow { font: 600 0.72rem/1 var(--f-body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+
+header.top { display: grid; gap: 14px; margin-bottom: 28px; }
+.lede { font-size: 1.05rem; color: var(--muted); }
+
+.legend { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-top: 4px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font: 600 0.75rem/1 var(--f-body); padding: 5px 9px;
+  border-radius: 999px; white-space: nowrap; }
+.chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.c-you { color: var(--you); background: var(--you-bg); }
+.c-agent { color: var(--agent); background: var(--agent-bg); }
+.c-engine { color: var(--engine); background: var(--engine-bg); }
+.c-hook { color: var(--hook); background: var(--hook-bg); }
+.c-rev { color: var(--rev); background: var(--rev-bg); }
+.legend-note { font-size: 0.85rem; color: var(--muted); }
+
+.layout { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 36px; align-items: start; }
+nav.rail { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 20px); }
+nav.rail ol { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 2px; border-left: 2px solid var(--line); }
+nav.rail a { display: grid; grid-template-columns: 28px 1fr; gap: 6px; padding: 6px 10px; margin-left: -2px;
+  border-left: 2px solid transparent; color: var(--muted); text-decoration: none; font-size: 0.9rem; line-height: 1.35; }
+nav.rail a:hover, nav.rail a:focus-visible { color: var(--ink); border-left-color: var(--accent); outline: none; }
+nav.rail .n { font-family: var(--f-mono); font-size: 0.78rem; padding-top: 2px; }
+nav.rail .gatemark { color: var(--stop); font-weight: 600; }
+
+main { display: grid; gap: 22px; min-width: 0; }
+section.block { display: grid; gap: 14px; min-width: 0; }
+
+.ask { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 20px; display: grid; gap: 14px; }
+pre { margin: 0; background: var(--code-bg); border-radius: 8px; padding: 14px 16px; overflow-x: auto;
+  font: 0.85rem/1.55 var(--f-mono); }
+.two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.mode { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; display: grid; gap: 6px; }
+.mode h3 { font-size: 0.95rem; }
+
+.stage { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; scroll-margin-top: 20px; min-width: 0; }
+.stage.gate { border-left: 4px solid var(--stop); }
+.stage-head { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 14px; padding: 18px 20px 12px; align-items: start; }
+.num { font: 600 0.8rem/1 var(--f-mono); color: var(--muted); border: 1px solid var(--line); border-radius: 6px;
+  padding: 7px 8px; min-width: 38px; text-align: center; }
+.stage.gate .num { color: var(--stop); border-color: var(--stop); }
+.stage-head .who { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.stage-head .what { color: var(--muted); margin-top: 6px; }
+.stage-body { padding: 0 20px 18px; display: grid; gap: 14px; }
+.steps { margin: 0; padding-left: 1.25rem; display: grid; gap: 7px; }
+.steps li { max-width: 78ch; }
+.steps li::marker { color: var(--muted); font-family: var(--f-mono); font-size: 0.85em; }
+.why { font-size: 0.9rem; color: var(--muted); border-left: 2px solid var(--line); padding-left: 12px; }
+.why b { color: var(--ink); font-weight: 600; }
+
+.facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid var(--line); }
+.fact { padding: 11px 20px; display: grid; gap: 4px; align-content: start; min-width: 0; }
+.fact + .fact { border-left: 1px solid var(--line); }
+.fact .eyebrow { font-size: 0.66rem; }
+.fact div:last-child { font-size: 0.88rem; }
+.pass { color: var(--pass); font-weight: 600; }
+.stopword { color: var(--stop); font-weight: 600; }
+
+.sub { display: grid; gap: 8px; }
+.sub h3 { font-size: 0.95rem; }
+.rules { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.rule { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 0.9rem; display: grid; gap: 4px; min-width: 0; }
+.rule b { font-weight: 600; }
+
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.88rem; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font: 600 0.72rem/1.2 var(--f-body); letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); background: var(--code-bg); }
+tr:last-child td { border-bottom: 0; }
+td.nowrap { white-space: nowrap; }
+.tier { font: 500 0.75rem/1 var(--f-mono); padding: 3px 7px; border-radius: 4px; background: var(--code-bg); white-space: nowrap; }
+
+.stoprule { background: var(--you-bg); border: 1px solid var(--you); border-radius: 10px; padding: 18px 20px; display: grid; gap: 10px; }
+.stoprule h2 { color: var(--you); }
+.replies { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.reply { background: var(--surface); border-radius: 8px; padding: 10px 12px; font-size: 0.9rem; display: grid; gap: 4px; }
+.reply code { font-weight: 500; }
+
+.note { border: 1px dashed var(--line); border-radius: 8px; padding: 12px 14px; font-size: 0.88rem; color: var(--muted); }
+footer { margin-top: 36px; font-size: 0.85rem; color: var(--muted); }
+
+@media (max-width: 900px) {
+  .layout { grid-template-columns: minmax(0, 1fr); }
+  nav.rail { position: static; }
+  nav.rail ol { grid-template-columns: repeat(2, minmax(0, 1fr)); border-left: 0; gap: 0 12px; }
+  nav.rail a { border-left: 0; padding-left: 0; }
+}
+@media (max-width: 640px) {
+  .two, .rules, .replies { grid-template-columns: minmax(0, 1fr); }
+  .facts { grid-template-columns: minmax(0, 1fr); }
+  .fact + .fact { border-left: 0; border-top: 1px solid var(--line); }
+  nav.rail ol { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header class="top">
+    <span class="eyebrow">ai-kit · gated development flow</span>
+    <h1>From your prompt to an open MR</h1>
+    <p class="lede">Every step between typing a feature request and getting a merge request, with the rule each step follows.
+      The agent does the work; <code>gate.py</code> decides what gets reviewed and checked and whether it passed;
+      the hooks refuse a commit or push that lacks a passing stamp. Merging is always yours.</p>
+    <div class="legend" aria-label="Who acts">
+      <span class="chip c-you">You</span>
+      <span class="chip c-agent">Agent</span>
+      <span class="chip c-engine">gate.py</span>
+      <span class="chip c-rev">Reviewers</span>
+      <span class="chip c-hook">Hook</span>
+      <span class="legend-note">Hooks exist in Claude Code only; other agents follow the gates by instruction.
+        Stages with an amber edge are gates that can stop and ask you.</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="rail" aria-label="Stages">
+      <span class="eyebrow">Stages</span>
+      <ol>
+        <li><a href="#ask"><span class="n">0</span><span>The prompt</span></a></li>
+        <li><a href="#preflight"><span class="n">1</span><span>Pre-flight</span></a></li>
+        <li><a href="#worktree"><span class="n">2</span><span>Worktree + venv</span></a></li>
+        <li><a href="#register"><span class="n">3</span><span>Register the run</span></a></li>
+        <li><a href="#plan"><span class="n">4</span><span class="gatemark">Plan gate</span></a></li>
+        <li><a href="#implement"><span class="n">5</span><span>Implement</span></a></li>
+        <li><a href="#review"><span class="n">6</span><span class="gatemark">Review gate</span></a></li>
+        <li><a href="#checks"><span class="n">7</span><span class="gatemark">Checks gate</span></a></li>
+        <li><a href="#commit"><span class="n">8</span><span>Commit</span></a></li>
+        <li><a href="#push"><span class="n">9</span><span class="gatemark">Push gate + MR</span></a></li>
+        <li><a href="#selection"><span class="n">·</span><span>What runs, and why</span></a></li>
+        <li><a href="#stop"><span class="n">·</span><span>The one stop rule</span></a></li>
+        <li><a href="#tags"><span class="n">·</span><span>Your tags</span></a></li>
+        <li><a href="#limits"><span class="n">·</span><span>Limits</span></a></li>
+      </ol>
+    </nav>
+
+    <main>
+      <!-- 0 -->
+      <section class="ask stage" id="ask">
+        <div class="stage-head" style="padding:0">
+          <span class="num">0</span>
+          <div>
+            <h2>The prompt</h2>
+            <div class="who"><span class="chip c-you">You</span></div>
+          </div>
+        </div>
+<pre>/parallel-feature-workflow gated
+slug: export-csv
+feature: Add a CSV export to the results page. Default delimiter is a comma;
+the button sits next to "Download JSON". Out of scope: Excel files.</pre>
+        <div class="two">
+          <div class="mode">
+            <h3>With <code>gated</code></h3>
+            <p>The word is your authorization. A passing plan gate replaces your plan approval, and passing gates authorize the commit, the push and opening the MR. The flow runs to the MR and stops only when a step uses all its attempts.</p>
+          </div>
+          <div class="mode">
+            <h3>Without <code>gated</code></h3>
+            <p>The same gates run, but the flow stops for you twice: after the plan review (you approve with <code>#approve-plan</code>) and before the commit (you get a proposed message and say go).</p>
+          </div>
+        </div>
+        <p class="why"><b>Why the wording matters.</b> The <code>feature:</code> text is saved word for word as <code>request.md</code>, and every reviewer checks the work against it. A vague ask makes vague checks. The <code>Out of scope:</code> line is how reviewers tell your intent apart from the agent's additions.</p>
+      </section>
+
+      <!-- 1 -->
+      <article class="stage" id="preflight">
+        <div class="stage-head">
+          <span class="num">1</span>
+          <div>
+            <h2>Pre-flight</h2>
+            <div class="who"><span class="chip c-agent">Agent</span></div>
+            <p class="what">Make sure the repo is safe to branch from before anything is created.</p>
+          </div>
+        </div>
+        <div class="stage-body">
+          <ol class="steps">
+            <li>The main checkout must be clean (<code>git status</code>), and the agent must not be on a branch it would commit to.</li>
+            <li><code>git check-ignore</code> on a path inside <code>.worktrees/</code>, <code>.venv</code> and <code>.env</code>. If <code>.worktrees/</code> is not ignored, it goes into <code>.git/info/exclude</code> (local, no commit), and the permanent <code>.gitignore</code> line ships on the feature branch.</li>
+            <li>Once per clone: <code>push.default current</code> and <code>push.autoSetupRemote true</code>, so a push from a worktree goes to its own branch, never to the base.</li>
+            <li>The project file (<code>.claude/parallel-feature-workflow.md</code>) is read; its <code>## Pre-flight</code> steps run.</li>
+            <li>Waits for <b>"OK START DO IT"</b>. A <code>gated</code> request counts as that go-ahead.</li>
+          </ol>
+        </div>
+        <div class="facts">
+          <div class="fact"><span class="eyebrow">Produces</span><div>A clean, ignore-safe repo</div></div>
+          <div class="fact"><span class="eyebrow">Stops when</span><div>The tree is dirty, or waiting for your go (not gated)</div></div>
+          <div class="fact"><span class="eyebrow">Defined in</span><div><code>parallel-feature-workflow</code> Phase 0</div></div>
+        </div>
+      </article>
+
+      <!-- 2 -->
+      <article class="stage" id="worktree">
+        <div class="stage-head">
+          <span class="num">2</span>
+          <div>
+            <h2>Worktree + venv</h2>
+            <div class="who"><span class="chip c-agent">Agent</span></div>
+            <p class="what">One isolated checkout per feature, so features never touch each other or main.</p>
+          </div>
+        </div>
+        <div class="stage-body">
+          <ol class="steps">
+            <li><code>git fetch origin</code>, then <code>git worktree add --no-track .worktrees/&lt;slug&gt; -b feat/&lt;slug&gt; origin/&lt;base&gt;</code>.</li>
+            <li>Checks the new branch has <b>no</b> upstream. With one, the branch would track the base and a later push could land on it.</li>
+            <li>Creates a fresh <code>.venv</code> inside the worktree and installs there. This standing answer replaces "which venv?" questions.</li>
+            <li>Copies the files the project lists (<code>## Copy into worktree</code>) and links heavy dependency folders such as <code>node_modules</code> (<code>## Link from main</code>), never installing through a link.</li>
+            <li>Runs the project's <code>## Setup</code>.</li>
+          </ol>
+          <p class="why"><b>Why <code>origin/&lt;base&gt;</code>, not the local branch.</b> A local branch is often behind; basing on it silently builds the feature on stale code.</p>
+        </div>
+        <div class="facts">
+          <div class="fact"><span class="eyebrow">Produces</span><div><code>.worktrees/&lt;slug&gt;</code> on <code>feat/&lt;slug&gt;</code>, own venv</div></div>
+          <div class="fact"><span class="eyebrow">Stops when</span><div>—</div></div>
+          <div class="fact"><span class="eyebrow">Defined in</span><div><code>parallel-feature-workflow</code> Phase 1</div></div>
+        </div>
+      </article>
+
+      <!-- 3 -->
+      <article class="stage" id="register">
+        <div class="stage-head">
+          <span class="num">3</span>
+          <div>
+            <h2>Register the run</h2>
+            <div class="who"><span class="chip c-agent">Agent</span><span class="chip c-engine">gate.py</span></div>
+            <p class="what">Write down the three artifacts everything after this is checked against.</p>
+          </div>
+        </div>
+        <div class="stage-body">
+          <ol class="steps">
+            <li><b>request.md</b>: your <code>feature:</code> text, verbatim.</li>
+            <li><b>plan.md</b>: the plan, opening with its file table (every file it will create or change).</li>
+            <li><b>divergence-log.md</b>: empty for now; every departure from the plan goes here.</li>
+            <li><code>gate.py init --request … --plan … --divergence-log …</code> registers the run for the branch and prints the <b>dashboard</b> path (plus the Windows path under WSL). The dashboard reloads itself and opens with whether you need to decide anything.</li>
+          </ol>
+          <p class="why"><b>Why it is files, not chat.</b> Reviewers read these exact files. A long session gets compacted; the files survive it, and the fidelity reviewer can compare the code with what you asked and what was planned.</p>
+        </div>
+        <div class="facts">
+          <div class="fact"><span class="eyebrow">Produces</span><div>Registered run + live dashboard</div></div>
+          <div class="fact"><span class="eyebrow">Stops when</span><div>—</div></div>
+          <div class="fact"><span class="eyebrow">Defined in</span><div><code>parallel-feature-workflow</code> Phase 2.2</div></div>
+        </div>
+      </article>
+
+      <!-- 4 -->
+      <article class="stage gate" id="plan">
+        <div class="stage-head">
+          <span class="num">4</span>
+          <div>
+            <h2>Plan gate</h2>
+            <div class="who"><span class="chip c-engine">gate.py</span><span class="chip c-rev">Reviewers</span><span class="chip c-agent">Agent</span><span class="chip c-you">You (not gated)</span></div>
+            <p class="what">A reviewer checks the plan before a single line of code is written.</p>
+          </div>
+        </div>
+        <div class="stage-body">
+          <ol class="steps">
+            <li><code>plan-prepare</code> tiers the plan from its file table and writes the plan reviewer's prompt. A docs-only plan gets no reviewer.</li>
+            <li>The <b>plan</b> reviewer runs in a fresh read-only worker and checks P1–P7: coverage of the request, traceability, proportionality, reuse of existing code, the <b>consumer sweep</b> (every file that reads what changes), project rules, and unproven claims.</li>
+            <li><code>plan-ingest</code> verifies each finding's quote sits at the cited line, else drops it.</li>
+            <li>Findings: the agent revises the plan, or rejects a wrong finding with a <code>file:line</code> citation.
+              <ul>
+                <li><b>Gated:</b> back to step 1. No human reads the plan, so a reviewer re-checks the fix.</li>
+                <li><b>Not gated:</b> no second round. You see each finding next to the plan text that fixes it and type <code>#approve-plan</code>.</li>
+              </ul>
+            </li>
+            <li>The plan stamp is written. It also writes <code>HANDOFF.md</code> and moves the request, plan and log into <code>.handoff/</code>; the agent asks "build here, or in the worktree's own window?" (there you type <code>/resume-handoff</code>).</li>
+          </ol>
+          <p class="why"><b>Why review the plan first.</b> A missed consumer or a disproportionate design is cheapest to fix as one sentence of plan, not as code across ten files.</p>
+        </div>
+        <div class="facts">
+          <div class="fact"><span class="eyebrow">Produces</span><div><span class="pass">Plan stamp</span> (PASS or APPROVED), handoff</div></div>
+          <div class="fact"><span class="eyebrow">Stops when</span><div><span class="stopword">2 failed rounds</span>, or waiting for <code>#approve-plan</code></div></div>
+          <div class="fact"><span class="eyebrow">Defined in</span><div><code>gate</code> skill, <code>/gate plan</code></div></div>
+        </div>
+      </article>
+
+      <!-- 5 -->
+      <article class="stage" id="implement">
+        <div class="stage-head">
+          <span class="num">5</span>
+          <div>
+            <h2>Implement</h2>
+            <div class="who"><span class="chip c-agent">Agent</span><span class="chip c-rev">Reviewers (tripwire)</span></div>
+            <p class="what"><code>implement-plan</code> builds the plan end to end without stopping to ask.</p>
+          </div>
+        </div>
+        <div class="stage-body">
+          <ol class="steps">
+            <li><b>Lock the plan.</b> Turn its steps into a checklist, record the base commit and the files that were already dirty (those are not reviewed), and start the divergence log.</li>
+            <li><b>Build with TDD</b>, reading each file before editing it and matching the code around it.</li>
+            <li><b>Log every divergence instead of asking.</b> <code>[LOGIC]</code> = behavior, output or file set changed (with the rejected alternative); <code>[MECH]</code> = naming, placement, additive work; <code>[RULE]</code> = a change made because a reviewer found something.</li>
+            <li><b>Tripwire.</b> Right after the first edit to a risky file (one in the gates' <code>always_when</code>), the project reviewers for that file run once. No attempt is counted and no stamp is written; the point is to catch a bad first instance before it is copied nine times.</li>
+          </ol>
+          <p class="why"><b>The only hard stops here:</b> a destructive, irreversible or outward-facing action, or a plan that has become impossible with nothing independent left to do. A preference question is never a stop; it becomes a <code>[LOGIC]</code> row you read in the summary.</p>
+        </div>
+        <div class="facts">
+          <div class="fact"><span class="eyebrow">Produces</span><div>The code, tests, divergence log</div></div>
+          <div class="fact"><span class="eyebrow">Stops when</span><div>Only on the hard stops above</div></div>
+          <div class="fact"><span class="eyebrow">Defined in</span><div><code>implement-plan</code> Phases 0–1</div></div>
+        </div>
+      </article>
+
+      <!-- 6 -->
+      <article class="stage gate" id="review">
+        <div class="stage-head">
+          <span class="num">6</span>
+          <div>
+            <h2>Review gate</h2>
+            <div class="who"><span class="chip c-agent">Agent</span><span class="chip c-engine">gate.py</span><span class="chip c-rev">Reviewers</span></div>
+            <p class="what">Independent reviewers, each with one lens, read the exact staged tree. The script, not the agent, decides who runs and whether it passed.</p>
+          </div>
+        </div>
+        <div class="stage-body">
+          <ol class="steps">
+            <li><b>Stage by name.</b> <code>git add &lt;explicit paths&gt;</code>; <code>-A</code>, <code>.</code>, <code>-u</code> and directories are blocked.</li>
+            <li><b>Select.</b> <code>review-prepare</code> picks reviewers from the diff against the merge-base (see <a href="#selection">What runs, and why</a>) and skips any reviewer still clean for its scope.</li>
+            <li><b>Dispatch.</b> Every selected reviewer starts at once in a fresh read-only worker, at its model tier. Its prompt is one line pointing at the file <code>gate.py</code> wrote; the agent adds nothing, summarizes nothing.</li>
+            <li><b>Save verbatim.</b> Each reply is saved unchanged to its <code>out</code> file before anyone acts on it.</li>
+            <li><b>Ingest.</b> <code>review-ingest</code> drops a finding whose quote is not at the cited line, and marks a reviewer invalid if it skipped a file in its scope or reported the wrong tree.</li>
+            <li><b>Triage.</b> Each open finding is verified against the code: fixed (logic findings first), or rejected as wrong with <code>gate.py reject --cite file:line</code>. Each finding can be rejected only once: if the reviewer raises it again, it keeps blocking until it is fixed or the attempts run out and you decide. Each outcome is noted on the dashboard in plain English.</li>
+            <li>Re-stage and repeat until clean, then <code>stamp --stage review</code>.</li>
+          </ol>
+          <div class="sub">
+            <h3>Four rules that keep rounds short</h3>
+            <div class="rules">
+              <div class="rule"><b>Logic first, quality last</b><span>While any logic reviewer (fidelity, correctness) runs, quality reviewers wait. They run as a final polish round once logic is clean, because a logic fix rewrites what they would review.</span></div>
+              <div class="rule"><b>Exclusions</b><span>A reviewer never sees files its lens exempts: test files never reach <code>polish</code> or <code>data-schema</code>.</span></div>
+              <div class="rule"><b>Delta re-review</b><span>A reviewer that already reviewed this branch gets only what changed since, plus its own still-open findings to re-check. The first review covers the whole change.</span></div>
+              <div class="rule"><b>No new scope</b><span>On a re-review, a new should-fix on unchanged lines is kept as a non-blocking nit. A blocker always blocks, and so does an old finding that is still not fixed.</span></div>
+            </div>
+            <p class="muted" style="font-size:.88rem">Plus <b>re-run only where needed</b>: once clean, a reviewer with <code>rerun_skip = ["@tests"]</code> is not re-run when only tests changed, so a test-only fix re-runs the <code>tests</code> reviewer alone.</p>
+          </div>
+        </div>
+        <div class="facts">
+          <div class="fact"><span class="eyebrow">Produces</span><div><span class="pass">Review stamp</span> for the staged tree</div></div>
+          <div class="fact"><span class="eyebrow">Stops when</span><div><span class="stopword">3 failed rounds</span> (blocking findings or an invalid reviewer)</div></div>
+          <div class="fact"><span class="eyebrow">Defined in</span><div><code>gate</code> skill, <code>/gate review</code></div></div>
+        </div>
+      </article>
+
+      <!-- 7 -->
+      <article class="stage gate" id="checks">
+        <div class="stage-head">
+          <span class="num">7</span>
+          <div>
+            <h2>Checks gate</h2>
+            <div class="who"><span class="chip c-engine">gate.py</span><span class="chip c-agent">Agent</span></div>
+            <p class="what">The project's real commands run against the tree. Starts in the background alongside the review round.</p>
+          </div>
+        </div>
+        <div class="stage-body">
+          <ol class="steps">
+            <li><code>checks-run</code> runs every selected check not already passing for this tree, in order: <b>mechanical → unit (targeted) → dry run → UI → real → full suite</b>. A failure stops the later groups.</li>
+            <li><b>Real</b> checks run only if the project's <code>max_usd</code> is above 0; otherwise they are SKIPPED and listed as unverified.</li>
+            <li>The <b>full suite</b> (<code>last = true</code>) runs once and must pass on exactly the final tree.</li>
+            <li>A red check: read its log and fix the code. <code>--baseline &lt;id&gt;</code> re-runs it on a clean base worktree to say whose failure it is, but it still blocks either way.</li>
+            <li>Then <code>stamp --stage checks</code>.</li>
+          </ol>
+          <p class="why"><b>Never weaken a check.</b> No skip, xfail, loosened assertion, deleted test or mocked-away unit to get green. A test failing because the code is wrong is the test doing its job.</p>
+        </div>
+        <div class="facts">
+          <div class="fact"><span class="eyebrow">Produces</span><div><span class="pass">Checks stamp</span>, evidence logs</div></div>
+          <div class="fact"><span class="eyebrow">Stops when</span><div><span class="stopword">3 failed runs</span></div></div>
+          <div class="fact"><span class="eyebrow">Defined in</span><div><code>gate</code> skill, <code>/gate checks</code></div></div>
+        </div>
+      </article>
+
+      <!-- 8 -->
+      <article class="stage" id="commit">
+        <div class="stage-head">
+          <span class="num">8</span>
+          <div>
+            <h2>Commit</h2>
+            <div class="who"><span class="chip c-agent">Agent</span><span class="chip c-hook">Hook</span><span class="chip c-you">You (not gated)</span></div>
+            <p class="what">The hook lets a commit through only with both stamps for the exact staged tree and clean hygiene.</p>
+          </div>
+        </div>
+        <div class="stage-body">
+          <ol class="steps">
+            <li><b>Before:</b> the interpreter resolves inside the worktree; only files the agent created get formatted (an edited file only if it was clean at HEAD); <code>gate.py status</code> shows both stamps.</li>
+            <li><b>Gated:</b> <code>git add &lt;paths&gt;</code>, then a plain <code>git commit</code> as a separate command. One concept per commit, compact subject. <b>Not gated:</b> the agent stops, summarizes, proposes the message and waits.</li>
+            <li><b>The hook checks</b> the review and checks stamps for <code>HEAD^{tree}</code> of the staged index, then hygiene (no model, seconds):</li>
+          </ol>
+          <div class="tablewrap">
+            <table>
+              <thead><tr><th>Rule</th><th>Blocks when</th></tr></thead>
+              <tbody>
+                <tr><td class="nowrap">H1 unplanned</td><td>a staged file is in neither the plan's file table nor the divergence log</td></tr>
+                <tr><td class="nowrap">H2 junk</td><td>a staged file matches the junk patterns: scratch dirs, logs, <code>.bak</code>/<code>.orig</code>/<code>.rej</code>, caches, run outputs</td></tr>
+                <tr><td class="nowrap">H3 scratch leak</td><td>an added line contains a scratchpad or temp path</td></tr>
+                <tr><td class="nowrap">H4 heavy</td><td>a binary file, or one over <code>max_file_kb</code>, that the plan does not list</td></tr>
+                <tr><td class="nowrap">H5 leftovers</td><td>report only: untracked files, listed for cleanup</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="why"><b>Also blocked:</b> <code>git commit -a</code>, commits with pathspecs, staging and committing in one command, a commit and a push in one command, and gated git commands hidden behind a wrapper such as <code>timeout</code> or <code>env</code>. Your own terminal is never gated.</p>
+        </div>
+        <div class="facts">
+          <div class="fact"><span class="eyebrow">Produces</span><div>A commit on <code>feat/&lt;slug&gt;</code></div></div>
+          <div class="fact"><span class="eyebrow">Stops when</span><div>Blocked until fixed; a code fix re-runs the touched review and checks</div></div>
+          <div class="fact"><span class="eyebrow">Defined in</span><div><code>gate_guard.py</code>, <code>gate.py audit --mode staged</code></div></div>
+        </div>
+      </article>
+
+      <!-- 9 -->
+      <article class="stage gate" id="push">
+        <div class="stage-head">
+          <span class="num">9</span>
+          <div>
+            <h2>Push gate + MR</h2>
+            <div class="who"><span class="chip c-engine">gate.py</span><span class="chip c-hook">Hook</span><span class="chip c-agent">Agent</span></div>
+            <p class="what">One last audit over every commit on the branch, then the MR is opened. It is never merged.</p>
+          </div>
+        </div>
+        <div class="stage-body">
+          <ol class="steps">
+            <li>Confirms there is something to send: <code>git log origin/&lt;base&gt;..HEAD</code> is not empty.</li>
+            <li><code>audit --mode branch --fetch</code> checks every commit: hygiene H1–H4, forbidden paths (<code>.env</code>, keys, agent folders), and secret patterns.</li>
+            <li>If the base moved under the branch, the affected checks re-run on the merge result. A merge conflict uses up all push attempts at once, because only a rebase can fix it and that is yours to do.</li>
+            <li><code>stamp --stage push</code>. The hook re-checks every stamp for <code>HEAD^{tree}</code> before letting the push through.</li>
+            <li>Push with an explicit refspec (<code>git push -u origin feat/&lt;slug&gt;</code>), never a bare <code>git push</code>, then open the MR (GitLab push options, or <code>gh pr create</code>).</li>
+            <li>The MR body: implement-plan's summary (decisions made for you, what was built, how it was tested, the review rounds, gaps), then <code>gate.py summary --head</code>: the reviewers with why each ran, and the <b>How it was tested</b> table.</li>
+          </ol>
+        </div>
+        <div class="facts">
+          <div class="fact"><span class="eyebrow">Produces</span><div><span class="pass">Push stamp</span>, the MR URL</div></div>
+          <div class="fact"><span class="eyebrow">Stops when</span><div><span class="stopword">2 failed audits</span>, or a conflict with base</div></div>
+          <div class="fact"><span class="eyebrow">Then</span><div>Merge is yours</div></div>
+        </div>
+      </article>
+
+      <!-- selection -->
+      <section class="block" id="selection" style="scroll-margin-top:20px">
+        <h2>What runs, and why</h2>
+        <p>The script decides from the diff alone. <code>gate.py explain</code> prints the whole selection, with a reason per item, for free.</p>
+<pre>files = staged diff vs the merge-base with origin/&lt;base&gt;     (plan gate: the plan's file table)
+lines = added + removed
+tier  = full      if lines &gt; 300 or a file matches tiers.full.always_when
+        lite      if lines &lt;= 40 and every file is docs, or .py with only comments,
+                  docstrings or type hints changed
+        standard  otherwise
+reviewer runs iff a changed file matches its applies_to and the tier is in its tiers
+check runs    iff a changed file matches its when       and the tier is in its tiers</pre>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Reviewer</th><th>Stage</th><th>Looks at</th><th>Model tier</th><th>Lens</th></tr></thead>
+            <tbody>
+              <tr><td>plan</td><td>plan</td><td>the plan</td><td><span class="tier">standard</span></td><td>coverage, traceability, proportionality, reuse, consumer sweep, project rules, unproven claims</td></tr>
+              <tr><td>fidelity</td><td>logic</td><td>all files</td><td><span class="tier">standard</span></td><td>does what you asked and the plan said; nothing added silently; divergences honest</td></tr>
+              <tr><td>correctness</td><td>logic</td><td>code</td><td><span class="tier">standard</span> · <span class="tier">strong</span> at full</td><td>logic errors, unhandled cases, broken caller contracts, state and resource bugs, injection</td></tr>
+              <tr><td>polish</td><td>quality</td><td>code, no tests</td><td><span class="tier">light</span></td><td>lean (dead code, unrequested work, duplicates), reads like the code around it, no magic values</td></tr>
+              <tr><td>docs-drift</td><td>quality</td><td>all files; runs at every tier</td><td><span class="tier">light</span></td><td>docs, READMEs, rules files and help text the change made false or left missing</td></tr>
+              <tr><td>tests</td><td>quality</td><td>code</td><td><span class="tier">standard</span></td><td>changed behavior with no test that would fail without it; tests weakened to pass</td></tr>
+              <tr><td>data-schema</td><td>quality</td><td>stored data and queries, no tests</td><td><span class="tier">light</span></td><td>a fact stored twice, unread columns, queries in loops, missing indexes</td></tr>
+              <tr><td class="muted">project reviewers</td><td class="muted">either</td><td class="muted">per <code>reviewers/gates.toml</code></td><td class="muted">per config</td><td class="muted">agent prompts, rules-doc and checklist reviewers; a project can add, never remove</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Tier</th><th>Review</th><th>Checks</th></tr></thead>
+            <tbody>
+              <tr><td><span class="tier">lite</span></td><td>docs-drift</td><td>mechanical (+ targeted unit tests if a .py changed)</td></tr>
+              <tr><td><span class="tier">standard</span></td><td>every matching reviewer</td><td>mechanical, targeted unit, dry run, UI, full suite</td></tr>
+              <tr><td><span class="tier">full</span></td><td>every matching reviewer, correctness on the strong tier</td><td>+ real run if the budget allows</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="note">Model tiers are agent-neutral: in Claude Code, <code>light</code> = haiku, <code>standard</code> = sonnet, <code>strong</code> = opus. Each reviewer is proven once by <code>/gate calibrate</code> (it must catch a planted defect and stay quiet on a clean case) after its own files or model change; an uncalibrated reviewer still runs, with a warning.</p>
+      </section>
+
+      <!-- stop -->
+      <section class="stoprule" id="stop" style="scroll-margin-top:20px">
+        <h2>The one stop rule</h2>
+        <p>The flow stops and waits for you <b>only when a step has used all its attempts</b>. An attempt is a <i>failed</i> run; a run that passes costs nothing. You get what each attempt tried and the open findings or the failing log tail, and reply with one of:</p>
+        <div class="replies">
+          <div class="reply"><code>#accept-gate</code><span>Continue; the open findings are listed in the MR.</span></div>
+          <div class="reply"><span><b>Direction</b></span><span>Tell the agent what to do; the step gets fresh attempts.</span></div>
+          <div class="reply"><code>#abort</code><span>Stop here.</span></div>
+        </div>
+        <p style="font-size:.9rem">Never a stop: a real run with <code>max_usd = 0</code> (it is SKIPPED and reported unverified). Always a block: a failing test, even one that also fails on base.</p>
+      </section>
+
+      <!-- tags -->
+      <section class="block" id="tags" style="scroll-margin-top:20px">
+        <h2>Your tags</h2>
+        <p>One-shot, bound to the session, expire after 2 hours. Only your typed prompt can arm one: the agent cannot write the token files, and text relayed from a reviewer or a notification never arms a tag.</p>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Tag</th><th>Effect</th></tr></thead>
+            <tbody>
+              <tr><td class="nowrap"><code>#approve-plan</code></td><td>Not gated: approves the plan as fixed after its one review round, without a re-review.</td></tr>
+              <tr><td class="nowrap"><code>#accept-gate</code></td><td>A gate stopped at its cap is stamped ACCEPTED; the MR lists what was open. A secret is never let through.</td></tr>
+              <tr><td class="nowrap"><code>#skip-review</code></td><td>The next commit and push skip the reviewer rounds; checks and hygiene still run.</td></tr>
+              <tr><td class="nowrap"><code>#skip-gates</code></td><td>The next commit and push skip review, checks and push stamps; hygiene and secrets still run.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- limits -->
+      <section class="block" id="limits" style="scroll-margin-top:20px">
+        <h2>Limits</h2>
+        <ul class="steps">
+          <li><b>Every session ends with the How it was tested table</b> from <code>gate.py summary --tested</code>: one row per kind (mechanical, unit, dry run, UI, real, review) plus a "not verified" row. A kind that did not run says why.</li>
+          <li><b>Stamps prevent omission, not forgery.</b> A determined agent could fabricate reviewer output; the MR links the raw outputs so you can spot-check them.</li>
+          <li><b>Reviewers are models.</b> Calibration proves a reviewer can see a planted defect, not that it saw every real one.</li>
+          <li><b>Real-LLM output quality always needs your eyes.</b> It is the permanent "not verified" row.</li>
+        </ul>
+      </section>
+
+      <footer>Sources: <code>core/rules/DEV_FLOW.md</code>, <code>core/skills/dev/gate/SKILL.md</code>, <code>default-gates.toml</code>, <code>parallel-feature-workflow</code> and <code>implement-plan</code> in ai-kit.</footer>
+    </main>
+  </div>
+</div>
+</body>
+</html>

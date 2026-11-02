@@ -1,0 +1,38 @@
+--- a/store.py
++++ b/store.py
+@@ -1,4 +1,4 @@
+-"""Orders and their customers, stored in SQLite."""
++"""Orders, customers and invoices, stored in SQLite."""
+ import sqlite3
+ 
+ SCHEMA = """
+@@ -8,6 +8,11 @@
+     customer_id INTEGER NOT NULL REFERENCES customers(id),
+     total_cents INTEGER NOT NULL
+ );
++CREATE TABLE IF NOT EXISTS invoices (
++    id INTEGER PRIMARY KEY,
++    order_id INTEGER NOT NULL UNIQUE REFERENCES orders(id),
++    billed_name TEXT NOT NULL  -- the name as printed when issued: a frozen snapshot, never synced
++);
+ """
+ 
+ 
+@@ -27,3 +32,17 @@
+ def order_report(conn: sqlite3.Connection) -> list[tuple[int, int, int]]:
+     """Every order with its customer id, for the nightly report."""
+     return conn.execute("SELECT id, customer_id, total_cents FROM orders").fetchall()
++
++
++def issue_invoice(conn: sqlite3.Connection, order_id: int) -> int:
++    """Freeze the customer's current name onto a new invoice for the order, and return its id."""
++    (name,) = conn.execute(
++        "SELECT c.name FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = ?", (order_id,)
++    ).fetchone()
++    cur = conn.execute("INSERT INTO invoices (order_id, billed_name) VALUES (?, ?)", (order_id, name))
++    return cur.lastrowid
++
++
++def invoice_header(conn: sqlite3.Connection, invoice_id: int) -> tuple[int, str]:
++    """The order id and billed name printed at the top of an invoice."""
++    return conn.execute("SELECT order_id, billed_name FROM invoices WHERE id = ?", (invoice_id,)).fetchone()

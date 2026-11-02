@@ -1,0 +1,9 @@
+--- a/schemas.py
++++ b/schemas.py
+@@ -4,4 +4,5 @@
+ 
+ class OrderOut(BaseModel):
+     id: int
+-    total: int
++    amount: int
++    status: str

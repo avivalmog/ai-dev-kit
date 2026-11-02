@@ -1,0 +1,60 @@
+# orders-service's gates, merged tighten-only onto the kit's core/skills/dev/gate/default-gates.toml:
+# a project may add reviewers, checks and risky files, or lower a limit, never remove or loosen a shared one.
+version = 1
+base = "main"
+max_usd = 0.0                  # real-run budget per gate run; 0 = real checks are skipped and reported unverified
+doc_maps = ["AGENTS.md"]       # routing docs a reviewer reads to find the rules for a file
+
+[caps]                         # failed attempts per stage before the flow stops and asks you
+review_rounds = 3
+
+[globs]
+data = ["src/orders/db/**"]    # appended to the shared @data: where this repo's stored data and queries live
+
+[tiers.full]                   # appended to the shared always_when: a change here always gets the full tier
+always_when = ["src/orders/api/schemas.py", "migrations/**"]
+
+[tests]
+map = ["tests/unit/test_{stem}.py"]   # changed module stem -> its test file, for {targeted_tests}
+
+[commit]                       # appended to the shared junk patterns
+junk_patterns = ["reports/**"]
+
+[push]                         # appended to the shared forbidden paths
+forbid_paths = ["config/local.toml"]
+
+# A project reviewer written as its own prompt (kind = "agent"). Calibrate it with `/gate calibrate api-contract`
+# after every edit; its fixtures are in reviewers/calibration/api-contract/.
+[[reviewer]]
+id = "api-contract"
+stage = "logic"
+kind = "agent"
+prompt = "reviewers/api-contract.md"
+applies_to = ["src/orders/api/**"]
+
+# A reviewer built from a rules doc (kind = "rules"): the shared rules template extracts and checks its rules.
+[[reviewer]]
+id = "migrations"
+stage = "logic"
+kind = "rules"
+rules = ["docs/MIGRATIONS.md"]
+applies_to = ["migrations/**"]
+
+[[checks]]
+id = "lint"
+kind = "mechanical"
+when = ["**/*.py"]
+run = ".venv/bin/ruff check src tests"
+
+[[checks]]
+id = "unit-targeted"
+kind = "unit"
+when = ["src/**", "tests/**"]
+run = ".venv/bin/python -m pytest -q {targeted_tests}"
+
+[[checks]]
+id = "full-suite"
+kind = "unit"
+when = ["src/**", "tests/**"]
+run = ".venv/bin/python -m pytest -q"
+last = true                    # must pass on exactly the final tree

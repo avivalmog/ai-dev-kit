@@ -1,0 +1,1 @@
+Add invoices. An invoice must show the customer's name as it was when the invoice was issued, even if the customer is renamed later. Add issue_invoice(order_id) and invoice_header(invoice_id) for the printed header.

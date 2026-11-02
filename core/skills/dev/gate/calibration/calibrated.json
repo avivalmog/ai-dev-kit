@@ -1,0 +1,130 @@
+{
+  "conventions": {
+    "at": "2026-10-26T16:59:18",
+    "false_positives": 0,
+    "model": "sonnet",
+    "seconds": {
+      "caught": 24.9,
+      "clean": 25.4
+    },
+    "sha": "cdc3691ab36eaa5bb0cee0a6e260a0a68faf18afbaab01e257b4b4d0f62be7c5"
+  },
+  "correctness": {
+    "at": "2026-11-01T14:04:49",
+    "false_positives": 0,
+    "model": "standard",
+    "seconds": {
+      "caught": 10.7,
+      "clean": 13.7
+    },
+    "sha": "ce5520e4ab5a84547eccdaa04289e5ecf218f204541c6a87406e9a8aad9c0010",
+    "shas": [
+      "93cf8fb05c15d4f4641557e21d1f4820dcc89f411bbfd1c349b5ff9e2a9bae7b",
+      "ce5520e4ab5a84547eccdaa04289e5ecf218f204541c6a87406e9a8aad9c0010"
+    ]
+  },
+  "data-schema": {
+    "at": "2026-11-01T14:04:49",
+    "false_positives": 0,
+    "model": "light",
+    "seconds": {
+      "caught": 15.0,
+      "clean": 10.6
+    },
+    "sha": "45a0685d3171a50c2a88a7e2287efc8b74c18930f5a18be807f843913130461b",
+    "shas": [
+      "45a0685d3171a50c2a88a7e2287efc8b74c18930f5a18be807f843913130461b",
+      "d90932b8ebbdfb667add99f236c2929cbb8629045f6bf545be281a4580339cb6"
+    ]
+  },
+  "docs-drift": {
+    "at": "2026-11-01T14:04:49",
+    "false_positives": 0,
+    "model": "light",
+    "seconds": {
+      "caught": 13.6,
+      "clean": 11.7
+    },
+    "sha": "72317e64a13cd3c87f21dc239da42428d731dd944f186398733057922c37f497",
+    "shas": [
+      "5ef518c79a03f29827e67c8ec5b793612ad4bd3de86abbc09726ee83dccb1592",
+      "72317e64a13cd3c87f21dc239da42428d731dd944f186398733057922c37f497"
+    ]
+  },
+  "fidelity": {
+    "at": "2026-11-01T14:04:49",
+    "false_positives": 0,
+    "model": "standard",
+    "seconds": {
+      "caught": 29.0,
+      "clean": 16.6
+    },
+    "sha": "3bb16f385854448d32028dbdba781d81340d8b925c29b86b7ecbfd5efd7d1f90",
+    "shas": [
+      "0812f327cddc0c22a81388a54f960e92744beffb65ec9892f2cbff92d1c17aae",
+      "3bb16f385854448d32028dbdba781d81340d8b925c29b86b7ecbfd5efd7d1f90"
+    ]
+  },
+  "lean": {
+    "at": "2026-10-26T16:59:18",
+    "false_positives": 0,
+    "model": "sonnet",
+    "seconds": {
+      "caught": 21.6,
+      "clean": 21.3
+    },
+    "sha": "16ddd41cf39131bef4111d03a83b8ea63ed0e1a9d27b35c5c5e55867d4879f81"
+  },
+  "magic-values": {
+    "at": "2026-10-26T16:59:18",
+    "false_positives": 0,
+    "model": "sonnet",
+    "seconds": {
+      "caught": 23.5,
+      "clean": 16.0
+    },
+    "sha": "7e8bae6b2c3337dee46e65421fb452de7b9065e5bdf6f8b399345d19b1da6288"
+  },
+  "plan": {
+    "at": "2026-11-01T14:04:49",
+    "false_positives": 0,
+    "model": "standard",
+    "seconds": {
+      "caught": 17.2,
+      "clean": 37.2
+    },
+    "sha": "2d6afb10eac91bd569e7b11f5f23fed09634e229b11356d93aeef79dd1e197b5",
+    "shas": [
+      "2d6afb10eac91bd569e7b11f5f23fed09634e229b11356d93aeef79dd1e197b5",
+      "cd46799b857edf6497e694443bc8b0e08b056d5ceb8727d859c28a03c026e755"
+    ]
+  },
+  "polish": {
+    "at": "2026-11-01T14:04:49",
+    "false_positives": 0,
+    "model": "light",
+    "seconds": {
+      "caught": 24.2,
+      "clean": 16.2
+    },
+    "sha": "a450a43c0cb7d440e19ebba9f8d3b172ed76e97914603beba1e343e5e26b4619",
+    "shas": [
+      "a450a43c0cb7d440e19ebba9f8d3b172ed76e97914603beba1e343e5e26b4619",
+      "a5338898d58f3a1b5e40b416c7506b9f2f21baa447792df1c3f21bf85777279d"
+    ]
+  },
+  "tests": {
+    "at": "2026-11-01T14:04:49",
+    "false_positives": 1,
+    "model": "standard",
+    "seconds": {
+      "caught": 22.6,
+      "clean": 17.7
+    },
+    "sha": "90aa4c99534ba32cd2852274cb4799dd43d23aad0e18e321ac66958d03b59424",
+    "shas": [
+      "41997db2b078f0ae233edc1dd0c91a7df9579cdf5ca7852af012cf85ff2ac756",
+      "90aa4c99534ba32cd2852274cb4799dd43d23aad0e18e321ac66958d03b59424"
+    ]
+  }
+}
