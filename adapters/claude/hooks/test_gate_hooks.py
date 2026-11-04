@@ -203,12 +203,38 @@ class MultiLineTest(HookCase):
 
 
 class FailClosedTest(HookCase):
-    def test_missing_engine_blocks_only_gated_git(self) -> None:
+    def setUp(self) -> None:
+        super().setUp()
         self.env["HOME"] = str(Path(self.tmp.name) / "no-home")   # gate_common is not importable from here
+
+    def guard(self, payload: object) -> int:
+        return self.hook("gate_guard.py", payload).returncode
+
+    def test_missing_engine_blocks_only_gated_git(self) -> None:
         self.assertEqual(self.bash('git commit -m "x"'), 2)
         self.assertEqual(self.bash("git push"), 2)
         self.assertEqual(self.bash("ls -la"), 0)
         self.assertEqual(self.bash("git status"), 0)
+
+    def test_missing_engine_lets_a_file_edit_mention_gated_git(self) -> None:
+        text = "run git commit, then git push"
+        for tool, tool_input in (("Write", {"file_path": "a.md", "content": text}),
+                                 ("Edit", {"file_path": "a.md", "old_string": "x", "new_string": text}),
+                                 ("NotebookEdit", {"notebook_path": "a.ipynb", "new_source": text})):
+            self.assertEqual(self.guard({"tool_name": tool, "tool_input": tool_input}), 0, tool)
+
+    def test_missing_engine_reads_only_the_command_of_a_bash_call(self) -> None:
+        self.assertEqual(self.guard({"tool_name": "Bash", "tool_input": {"command": "ls", "description": "git commit"}}), 0)
+        self.assertEqual(self.guard({"tool_name": "Bash", "tool_input": {"command": "git commit", "description": "ls"}}), 2)
+
+    def test_missing_engine_blocks_gated_git_in_a_payload_it_cannot_place(self) -> None:
+        for payload in (["git commit"], {"tool_name": "Other", "tool_input": {"text": "git commit"}},
+                        {"tool_name": "Bash", "tool_input": "git commit"},
+                        {"tool_name": "Bash", "tool_input": {"command": ["git commit"]}}):
+            self.assertEqual(self.guard(payload), 2, payload)
+        unreadable = subprocess.run(["/usr/bin/python3", str(HOOKS / "gate_guard.py")], input="not json: git commit",
+                                    capture_output=True, text=True, env=self.env)
+        self.assertEqual(unreadable.returncode, 2)
 
 
 class PushTest(HookCase):

@@ -28,6 +28,7 @@ except ImportError as exc:          # fail closed below: gated git commands are 
 
 GATE_CMD = ["uv", "run", "--no-project", "--python", "3.12", str(GATE_DIR / "gate.py")]
 AUDIT_TIMEOUT_S = 180
+FILE_TOOLS = ("Write", "Edit", "NotebookEdit")
 SEPARATOR_CHARS = set(";&|()")       # a token made only of these ends a simple command (`;(` and `|&` included)
 HEREDOC = re.compile(r"<<-?[ \t]*(?:'([^'\n]+)'|\"([^\"\n]+)\"|\\?([A-Za-z0-9_.-]+))")
 REDIRECTIONS = {">", ">>", "<", ">&", "&>", "<&", ">|", "&>>", "<<", "<<<"}
@@ -418,6 +419,20 @@ def guard_bash(command: str, cwd: Path, session: str) -> None:
         saw_commit = saw_commit or sub == "commit"
 
 
+def crash_scan_text(raw: str) -> str:
+    """What a crashed guard searches for gated git: a Bash command, nothing of a file edit, else the whole payload."""
+    try:
+        data = json.loads(raw)
+        tool = data.get("tool_name", "")
+        if tool in FILE_TOOLS:
+            return ""
+        if tool == "Bash":
+            return str(data["tool_input"]["command"])
+    except Exception:  # a payload of any other shape is searched whole: this path must never open the gate
+        pass
+    return raw
+
+
 def guarded_main() -> None:
     """Run the guard; if it crashes, refuse a gated git command (fail closed) and let anything else through."""
     raw = sys.stdin.read()
@@ -428,7 +443,7 @@ def guarded_main() -> None:
     except SystemExit:
         raise
     except Exception as exc:  # any crash must not silently open the gate
-        if GATED_GIT.search(raw):
+        if GATED_GIT.search(crash_scan_text(raw)):
             block(f"the gate guard crashed ({exc!r}); gated git commands are refused until it is fixed")
         sys.exit(0)
 
@@ -442,7 +457,7 @@ def main(raw: str) -> None:
             block("could not read the hook payload; gated git commands are refused")
         sys.exit(0)
     tool, inp = data.get("tool_name", ""), data.get("tool_input") or {}
-    if tool in ("Write", "Edit", "NotebookEdit"):
+    if tool in FILE_TOOLS:
         if protected_path(str(inp.get("file_path") or inp.get("notebook_path") or "")):
             block("gate stamps and user tokens are written only by gate.py and the user's #tags")
         sys.exit(0)
