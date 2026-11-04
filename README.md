@@ -88,6 +88,8 @@ To set up a project (its worktree recipe, extra reviewers and checks), see
    ```json
    {
      "hooks": {
+       "SessionStart": [{"matcher": "startup",
+                         "hooks": [{"type": "command", "command": "python3 ~/.claude/hooks/kit_update_check.py"}]}],
        "PreToolUse": [{"matcher": "Bash|Write|Edit|NotebookEdit",
                        "hooks": [{"type": "command", "command": "python3 ~/.claude/hooks/gate_guard.py"}]}],
        "UserPromptSubmit": [{"matcher": "",
@@ -119,14 +121,18 @@ The hooks only act on the agent. Your own terminal is never gated.
   or tag files.
 - **`gate_skip.py`** reads your typed prompt and arms a tag you wrote in it (`#skip-review`, `#skip-gates`,
   `#accept-gate`, `#approve-plan`) for 2 hours. Only your own prompt can arm a tag.
+- **`kit_update_check.py`** runs when a new session starts. If the kit's GitHub repo has commits your clone
+  lacks, it shows you the update command and tells the agent to pass it on. It never pulls by itself. It says
+  nothing when it can't tell, for example when you are offline, and waits at most 5 seconds.
 
-To work without the gates for a while, remove the two hooks from `settings.json`; everything else keeps
-working.
+To work without the gates for a while, remove `gate_guard.py` and `gate_skip.py` from `settings.json`;
+everything else keeps working.
 
 ### Updating
 
 `git pull` in the kit updates every linked file at once. Re-run `install.sh` when the pull adds or removes a
-file, or changes a reviewer (reviewer files are built copies, not links).
+file, or changes a reviewer (reviewer files are built copies, not links). If your `settings.json` has no
+`SessionStart` entry yet, add the one from step 4 of the install to be told when a newer kit is out.
 
 ### Uninstalling
 
