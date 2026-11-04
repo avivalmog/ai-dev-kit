@@ -38,12 +38,12 @@
     ]
   },
   "docs-drift": {
-    "at": "2026-11-01T14:04:49",
+    "at": "2026-11-04T11:29:19",
     "false_positives": 0,
-    "model": "light",
+    "model": "standard",
     "seconds": {
-      "caught": 13.6,
-      "clean": 11.7
+      "caught": 25.2,
+      "clean": 20.4
     },
     "sha": "72317e64a13cd3c87f21dc239da42428d731dd944f186398733057922c37f497",
     "shas": [
@@ -100,12 +100,12 @@
     ]
   },
   "polish": {
-    "at": "2026-11-01T14:04:49",
+    "at": "2026-11-04T11:29:19",
     "false_positives": 0,
-    "model": "light",
+    "model": "standard",
     "seconds": {
-      "caught": 24.2,
-      "clean": 16.2
+      "caught": 30.9,
+      "clean": 28.4
     },
     "sha": "a450a43c0cb7d440e19ebba9f8d3b172ed76e97914603beba1e343e5e26b4619",
     "shas": [

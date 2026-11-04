@@ -32,9 +32,10 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 import gate_view
-from gate_common import (AUDIT_BRANCH, AUDIT_STAGED, PASSING, PUSH_STAGES, SKIP_WAIVES, STAGE_CHECKS, STAGE_PLAN,
-                         STAGE_PUSH, STAGE_REVIEW, STATE_DIR, TOKEN_ACCEPT, TOKEN_APPROVE_PLAN, TOKEN_TTL_S, TOKENS_DIR, TREE_SHORT_LEN,
-                         USER_SKIP_FILE, VERDICT_ACCEPTED, VERDICT_APPROVED, VERDICT_PASS, repo_state, tree_state)
+from gate_common import (AUDIT_BRANCH, AUDIT_STAGED, BLOCKING, CANARY_OK, PASSING, PUSH_STAGES, SKIP_WAIVES, STAGE_CHECKS, STAGE_PLAN,
+                         STAGE_PUSH, STAGE_REVIEW, STATE_DIR, STATUS_FAIL, STATUS_PASS, STATUS_SKIPPED, TOKEN_ACCEPT, TOKEN_APPROVE_PLAN,
+                         TOKEN_TTL_S, TOKENS_DIR, TREE_HEAD, TREE_INDEX, TREE_SHORT_LEN, USER_SKIP_FILE, VERDICT_ACCEPTED,
+                         VERDICT_APPROVED, VERDICT_PASS, repo_state, tree_state)
 
 SKILL_DIR = Path(__file__).resolve().parent
 DEFAULT_GATES = SKILL_DIR / "default-gates.toml"
@@ -54,18 +55,18 @@ EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 QUOTE_WINDOW = 3            # lines either side of a finding's line where its quote may sit
 PRUNE_DAYS = 30
 CHECK_TIMEOUT_S = 60 * 60
+MODEL_TIERS = ("light", "standard", "strong")   # weakest first
+RE_REVIEW_MODEL = "standard"                    # a re-check reads a small change; the strongest model is for the first review
 DEFAULT_MODEL = "standard"   # a model tier (light | standard | strong); each agent maps it to one of its models
 TIER_LITE, TIER_STANDARD, TIER_FULL = "lite", "standard", "full"    # also the [tiers.*] table names
 DEFAULT_REVIEWER_TIERS = (TIER_STANDARD, TIER_FULL)
 ALL_TIERS = (TIER_LITE, TIER_STANDARD, TIER_FULL)
 TIER_RANK = {t: i for i, t in enumerate(ALL_TIERS)}
-BLOCKING = ("blocker", "should-fix")
 LATE_SEVERITY = "should-fix"     # on a re-review, this severity blocks only on lines changed since the last round
 HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", re.MULTILINE)
+REVIEWER_ATTEMPTS = "by_reviewer"          # attempts.json: each reviewer's failed rounds; a review's cap counts the worst
 TRIPWIRE_DIR, ADHOC_DIR = "tripwire", "adhoc"   # review rounds that never count against the gated review
 RUN_DIR_TREE_LEN = 12                      # tree id prefix naming a checks run dir
-STATUS_PASS, STATUS_FAIL, STATUS_SKIPPED = "pass", "fail", "skipped"
-CANARY_OK = ("caught", "unavailable")       # a round counts only when its canary was caught (or had none)
 SEVERITIES = ("blocker", "should-fix", "nit")
 KIND_ORDER = ("mechanical", "unit", "dry-run", "ui", "real")
 STAGE_LOGIC = "logic"
@@ -74,7 +75,6 @@ REVIEW_STAGES = (STAGE_LOGIC, "quality")
 RULES_KINDS = ("rules", "checklist", "adhoc")     # reviewers built from the shared rules template
 CAP_KEYS = {STAGE_PLAN: "plan_rounds", STAGE_REVIEW: "review_rounds", STAGE_CHECKS: "check_rounds",
             STAGE_PUSH: "push_rounds"}
-NOT_VERIFIED_NOTE = "real-LLM output quality, and anything no check covers"
 
 EXIT_OK, EXIT_FAIL, EXIT_ERROR, EXIT_CAP = 0, 1, 2, 3
 HANDOFF_FILE, HANDOFF_DIR = "HANDOFF.md", ".handoff"
@@ -661,9 +661,13 @@ def still_clean(repo: Path, clean_tree: str | None, current: str, patterns: list
 
 
 def stays_clean(repo: Path, cfg: dict[str, Any], r: Reviewer, state: dict[str, Any], tree: str) -> bool:
-    """A reviewer clean on an earlier tree needs no re-run while nothing in its scope changed, minus its rerun_skip."""
-    globs = cfg["globs"]
-    return still_clean(repo, state.get(r.id, {}).get("clean_tree"), tree, expand_globs(r.applies_to, globs),
+    """A reviewer clean on an earlier tree needs no re-run while nothing in its scope changed, minus its rerun_skip.
+
+    One with an older bug still open re-checks it on any new code: its silence is what clears the bug."""
+    globs, entry = cfg["globs"], state.get(r.id, {})
+    if entry.get("older") and entry.get("clean_tree") != tree:
+        return False
+    return still_clean(repo, entry.get("clean_tree"), tree, expand_globs(r.applies_to, globs),
                        expand_globs(cfg.get("exclude_paths", []) + r.rerun_skip + r.exclude, globs))
 
 
@@ -892,20 +896,22 @@ def finding_key(reviewer: str, f: dict[str, Any], root: Path) -> str:
 
 
 def judge_output(text: str, reviewer: str, assigned: list[str], repo: Path | None, tree: str | None,
-                 root: Path, rejections: dict[str, Any], expect_tree: str | None) -> dict[str, Any]:
+                 root: Path, rejections: dict[str, Any], expect_tree: str | None, allow_older: bool = True) -> dict[str, Any]:
     """Validate one reviewer output: schema, tree, coverage, quotes, re-raised rejections."""
     try:
         data = parse_output(text)
     except (ValueError, json.JSONDecodeError) as exc:
         return {"id": reviewer, "status": "invalid", "error": str(exc), "findings": []}
     if expect_tree and data.get("tree") != expect_tree:
-        return {"id": reviewer, "status": "invalid", "error": f"tree {data.get('tree')!r} is not {expect_tree}",
+        return {"id": reviewer, "status": "invalid", "error": f"{gate_view.WRONG_TREE_ERROR}{data.get('tree')!r} is not {expect_tree}",
                 "findings": []}
     checked = {rel_to(str(c), root) for c in data["checked"]}
     missing = [f for f in assigned if f not in checked]
     findings = []
     for f in data["findings"]:
         item = dict(f)
+        if not allow_older or item.get("older") is not True:   # only the code review asks the user about older bugs
+            item.pop("older", None)
         item["key"] = finding_key(reviewer, f, root)
         if not quote_found(repo, tree, root, f):
             item["state"] = "dropped"
@@ -914,11 +920,21 @@ def judge_output(text: str, reviewer: str, assigned: list[str], repo: Path | Non
         else:
             item["state"] = "open"
         findings.append(item)
-    blocking = [f for f in findings if f["state"] in ("open", "reraised") and f["severity"] in BLOCKING]
+    blocking = [f for f in findings if blocks(f)]
     if missing:
-        return {"id": reviewer, "status": "invalid", "error": f"did not report reading {missing}",
+        return {"id": reviewer, "status": "invalid", "error": f"{gate_view.MISSED_FILES_ERROR} {missing}",
                 "findings": findings}
     return {"id": reviewer, "status": "findings" if blocking else "clean", "error": "", "findings": findings}
+
+
+def blocks(f: dict[str, Any]) -> bool:
+    """A real defect still open that this change owns; an older bug waits for the user instead."""
+    return f["state"] in ("open", "reraised") and f["severity"] in BLOCKING and not f.get("older")
+
+
+def has_older_bug(findings: list[dict[str, Any]]) -> bool:
+    """Whether a report still holds an older bug for the user to decide on."""
+    return any(f.get("older") and f["state"] in ("open", "reraised") and f["severity"] in BLOCKING for f in findings)
 
 
 def score_fixture(text: str, fixture: Path, reviewer: str, workspace: Path | None = None) -> dict[str, Any]:
@@ -929,7 +945,8 @@ def score_fixture(text: str, fixture: Path, reviewer: str, workspace: Path | Non
     judged = judge_output(text, reviewer, files, None, None, root, {}, None)
     if judged["status"] == "invalid":
         return {"result": "invalid", "error": judged["error"], "false_positives": 0}
-    hits = [f for f in judged["findings"] if f["state"] == "open" and f["severity"] in BLOCKING]
+    reported = [f for f in judged["findings"] if f["state"] == "open"]   # a style lens rates its finds as nits
+    hits = [f for f in reported if f["severity"] in BLOCKING]
     if expected.get("clean"):
         return {"result": "clean" if not hits else "noisy", "false_positives": len(hits), "error": ""}
     want_id = str(expected["id"]).lower()
@@ -941,8 +958,8 @@ def score_fixture(text: str, fixture: Path, reviewer: str, workspace: Path | Non
         return id_ok and any(rel == t["file"] and abs(int(f["line"]) - int(t["line"])) <= QUOTE_WINDOW
                              for t in targets)
 
-    caught = [f for f in hits if is_planted(f)]
-    return {"result": "caught" if caught else "missed", "false_positives": len(hits) - len(caught), "error": ""}
+    return {"result": "caught" if any(is_planted(f) for f in reported) else "missed",
+            "false_positives": sum(1 for f in hits if not is_planted(f)), "error": ""}
 
 
 # --------------------------------------------------------------------------- run registration
@@ -972,11 +989,16 @@ def check_cap(repo: Path, stage: str, cfg: dict[str, Any]) -> None:
                         "#accept-gate, direction (then reset-attempts), or #abort", EXIT_CAP)
 
 
-def count_failure(repo: Path, stage: str) -> int:
-    """Record one failed attempt at `stage` (a run that passes costs nothing)."""
+def count_failure(repo: Path, stage: str, reviewers: Iterable[str] = ()) -> int:
+    """Record one failed attempt at `stage` (a run that passes costs nothing): one for each reviewer named, if any.
+
+    The stage's count is then its worst reviewer's, so one reviewer's failures never use up another's tries."""
     path = branch_dir(repo) / "attempts.json"
     data = load_json(path, {})
-    data[stage] = data.get(stage, 0) + 1
+    mine = data.setdefault(REVIEWER_ATTEMPTS, {}) if reviewers else {}
+    for rid in reviewers:
+        mine[rid] = mine.get(rid, 0) + 1
+    data[stage] = max(data.get(stage, 0), *mine.values()) if mine else data.get(stage, 0) + 1
     save_json(path, data)
     return data[stage]
 
@@ -986,6 +1008,8 @@ def reset_attempt(repo: Path, stage: str) -> None:
     path = branch_dir(repo) / "attempts.json"
     data = load_json(path, {})
     data[stage] = 0
+    if stage == STAGE_REVIEW:
+        data.pop(REVIEWER_ATTEMPTS, None)
     save_json(path, data)
 
 
@@ -1065,15 +1089,39 @@ def review_base(stage_dir: Path, state: dict[str, Any], rid: str) -> tuple[str |
     return report["tree"], prior
 
 
+def dispatch_model(r: Reviewer, tier: str, stage_dir: Path, state: dict[str, Any], re_review: bool = False) -> str:
+    """The model tier to dispatch `r` at: RE_REVIEW_MODEL at most on a re-review; one up when its last report was invalid
+    because it did not read its files."""
+    model = r.model_for(tier)
+    if re_review and model == MODEL_TIERS[-1]:
+        model = RE_REVIEW_MODEL
+    name = state.get(r.id, {}).get("round")
+    report = load_json(stage_dir / name / "ingest.json", None) if name else None
+    last = next((x for x in (report or {}).get("results", []) if x["id"] == r.id), None)
+    if model not in MODEL_TIERS or not last or last["status"] != "invalid" \
+            or not last.get("error", "").startswith(gate_view.MISSED_FILES_ERROR):
+        return model
+    return MODEL_TIERS[min(MODEL_TIERS.index(model) + 1, len(MODEL_TIERS) - 1)]
+
+
+def last_dispatched_model(r: Reviewer, tier: str, stage_dir: Path, state: dict[str, Any]) -> str:
+    """The model tier `r` last ran at, from its round's dispatch; the configured one when it has not run."""
+    name = state.get(r.id, {}).get("round")
+    dispatch = load_json(stage_dir / name / "dispatch.json", None) if name else None
+    entry = next((e for e in (dispatch or {}).get("dispatch", []) if e["id"] == r.id), None)
+    return entry["model_tier"] if entry else r.model_for(tier)
+
+
 def rereview_note(base: str, prior: list[dict[str, Any]]) -> str:
     """The re-review note: the tree it reviewed last, and the findings it must re-check."""
-    items = [f"- {f['id']} `{f['file']}:{f['line']}`: {f.get('why', '')}\n  quote: `{f['quote']}`" for f in prior]
+    items = [f"- {f['id']} `{f['file']}:{f['line']}`: {f.get('why', '')}\n  quote: `{f['quote']}`"
+             + (" (older: true)" if f.get("older") else "") for f in prior]
     return (REREVIEW_NOTE.read_text(encoding="utf-8").replace("{{BASE_TREE}}", base)
             .replace("{{PRIOR_FINDINGS}}", "\n".join(items) or "None."))
 
 
 def cmd_review_prepare(args: argparse.Namespace) -> int:
-    """Select reviewers, skip the ones still clean, write prompts for one parallel round plus a canary."""
+    """Select reviewers, skip the ones still clean, write prompts for one parallel round."""
     repo = repo_root(args.repo)
     cfg = load_config(repo)
     target = staged_target(repo, cfg)
@@ -1094,15 +1142,9 @@ def cmd_review_prepare(args: argparse.Namespace) -> int:
     state = load_json(stage_dir / "state.json", {})
     dispatch = [(r, p) for r, p in selected if not stays_clean(repo, cfg, r, state, target.end)]
     dispatch_ids = {r.id for r, _ in dispatch}
-    # Quality is the last, polish round: a logic fix rewrites code, so quality waits until logic is clean.
-    logic = [(r, p) for r, p in dispatch if r.stage == STAGE_LOGIC]
-    deferred = [r.id for r, _ in dispatch if r.stage != STAGE_LOGIC] if logic else []
-    dispatch = logic or dispatch
     result: dict[str, Any] = {"tree": target.end, "tier": tier, "tier_reason": reason,
                               "skipped": [{"id": p.id, "reason": p.reason} for _, p in picks if not p.selected],
                               "clean": [r.id for r, _ in selected if r.id not in dispatch_ids], "dispatch": []}
-    if deferred:
-        result["deferred"] = {"ids": deferred, "reason": "quality runs after every logic reviewer is clean"}
     if not dispatch:
         result["note"] = "every selected reviewer is clean for this tree; run `stamp --stage review`"
         print(json.dumps(result, indent=2))
@@ -1129,7 +1171,7 @@ def cmd_review_prepare(args: argparse.Namespace) -> int:
                 ctx["RE_REVIEW"] = rereview_note(base, prior)
                 extra = {"files": delta, "base": base,
                          "prior": [{k: f[k] for k in ("key", "id", "file", "line", "quote")} for f in prior]}
-        result["dispatch"].append(write_dispatch(round_dir, r, ctx, r.model_for(tier), r.id) | extra)
+        result["dispatch"].append(write_dispatch(round_dir, r, ctx, dispatch_model(r, tier, stage_dir, state, "base" in extra), r.id) | extra)
     # No per-round canary: a reviewer is proven once, by `/gate calibrate`, after its own files change.
     result["round"] = n
     save_json(round_dir / "dispatch.json", result | {"prepared_at": time.time()})
@@ -1170,13 +1212,12 @@ def same_finding(f: dict[str, Any], prior: dict[str, Any], root: Path) -> bool:
 
 
 def demote_late(judged: dict[str, Any], repo: Path, entry: dict[str, Any], tree: str, root: Path) -> None:
-    """On a delta re-review, a new should-fix off the lines changed since its base is kept as a nit, not a blocker.
+    """On a delta re-review, a new should-fix off the lines changed since its base, older or not, is kept as a nit.
 
-    A blocker always blocks, and so does an earlier finding re-reported because it is still not fixed."""
+    A blocker always stands, and so does an earlier finding re-reported because it is still not fixed."""
     spans: dict[str, list[tuple[int, int]]] = {}
     for f in judged["findings"]:
-        if f["state"] != "open" or f["severity"] != LATE_SEVERITY \
-                or any(same_finding(f, p, root) for p in entry.get("prior", [])):
+        if f["state"] != "open" or f["severity"] != LATE_SEVERITY or any(same_finding(f, p, root) for p in entry.get("prior", [])):
             continue
         path = rel_to(str(f["file"]), root)
         if path not in spans:
@@ -1185,8 +1226,7 @@ def demote_late(judged: dict[str, Any], repo: Path, entry: dict[str, Any], tree:
             continue
         f["severity"] = "nit"
         f["late"] = f"{LATE_SEVERITY} on lines unchanged since tree {entry['base'][:TREE_SHORT_LEN]}"
-    if judged["status"] == "findings" and not any(
-            f["state"] in ("open", "reraised") and f["severity"] in BLOCKING for f in judged["findings"]):
+    if judged["status"] == "findings" and not any(blocks(f) for f in judged["findings"]):
         judged["status"] = "clean"
 
 
@@ -1195,7 +1235,7 @@ def ingest_round(repo: Path | None, round_dir: Path, stage_dir: Path, root: Path
     dispatch = load_json(round_dir / "dispatch.json", None)
     if dispatch is None:
         raise GateError(f"{round_dir} has no dispatch.json")
-    rejections = load_json(stage_dir / "rejections.json", {})
+    rejections = load_json(stage_dir / gate_view.REJECTIONS_FILE, {})
     state = load_json(stage_dir / "state.json", {})
     canary = {"result": "unavailable"}
     if "canary" in dispatch:
@@ -1203,16 +1243,17 @@ def ingest_round(repo: Path | None, round_dir: Path, stage_dir: Path, root: Path
         out = Path(c["out"])
         canary = score_fixture(out.read_text(encoding="utf-8"), Path(c["fixture"]), c["id"],
                                Path(c["workspace"]) if c.get("workspace") else None) if out.exists() \
-            else {"result": "invalid", "error": f"output not saved: {out}", "false_positives": 0}
+            else {"result": "invalid", "error": f"{gate_view.NOT_SAVED_ERROR}: {out}", "false_positives": 0}
         canary["id"] = c["id"]
     proved = canary["result"] in CANARY_OK      # a missed canary: the round proved nothing, re-dispatch all of it
     results = []
     for entry in dispatch["dispatch"]:
         out = Path(entry["out"])
         text = out.read_text(encoding="utf-8") if out.exists() else ""
-        judged = judge_output(text, entry["id"], entry.get("files", []), repo, tree, root, rejections, dispatch["tree"])
+        judged = judge_output(text, entry["id"], entry.get("files", []), repo, tree, root, rejections, dispatch["tree"],
+                              allow_older=stage_dir.name == STAGE_REVIEW)
         if not out.exists():
-            judged.update(status="invalid", error=f"output not saved: {out}")
+            judged.update(status="invalid", error=f"{gate_view.NOT_SAVED_ERROR}: {out}")
         elif repo is not None and entry.get("base"):
             demote_late(judged, repo, entry, dispatch["tree"], root)
         results.append(judged)
@@ -1220,6 +1261,7 @@ def ingest_round(repo: Path | None, round_dir: Path, stage_dir: Path, root: Path
         valid = proved and judged["status"] != "invalid"     # what the next round's delta starts from
         state[entry["id"]] = {"clean_tree": dispatch["tree"] if proved and judged["status"] == "clean" else None,
                               "round": round_dir.name,
+                              "older": has_older_bug(judged["findings"]),
                               "valid_round": round_dir.name if valid else state.get(entry["id"], {}).get("valid_round")}
     report ={"round": round_dir.name, "tree": dispatch["tree"], "results": results, "canary": canary,
               "ingested_at": time.time(), "seconds": round(time.time() - dispatch.get("prepared_at", time.time()))}
@@ -1249,7 +1291,7 @@ def cmd_review_ingest(args: argparse.Namespace) -> int:
     report = ingest_round(repo, round_dir, stage_dir, repo, load_json(round_dir / "dispatch.json", {})["tree"])
     ok = print_ingest(report)
     if not ok and stage_dir.name == STAGE_REVIEW:
-        count_failure(repo, STAGE_REVIEW)
+        count_failure(repo, STAGE_REVIEW, [r["id"] for r in report["results"] if r["status"] != "clean"])
     return EXIT_OK if ok else EXIT_FAIL
 
 
@@ -1272,17 +1314,19 @@ def cmd_reject(args: argparse.Namespace) -> int:
     cited = repo / cite_file if not Path(cite_file).is_absolute() else Path(cite_file)
     if not cited.is_file() or not cite_line.isdigit() or int(cite_line) > len(cited.read_text(encoding="utf-8", errors="replace").splitlines()):
         raise GateError(f"counter-citation {args.cite} does not point at an existing line")
-    rejections = load_json(stage_dir / "rejections.json", {})
+    rejections = load_json(stage_dir / gate_view.REJECTIONS_FILE, {})
     rejections[finding["key"]] = {"round": round_dir.name, "cite": args.cite, "reason": args.reason}
-    save_json(stage_dir / "rejections.json", rejections)
+    save_json(stage_dir / gate_view.REJECTIONS_FILE, rejections)
     finding["state"] = "rejected"
-    if not [f for f in result["findings"] if f["state"] in ("open", "reraised") and f["severity"] in BLOCKING] \
-            and result["status"] == "findings":
+    state = load_json(stage_dir / "state.json", {})
+    latest = state.get(reviewer, {}).get("round") == round_dir.name   # rejecting in an earlier round leaves newer state alone
+    if latest:
+        state[reviewer]["older"] = has_older_bug(result["findings"])
+    if not any(blocks(f) for f in result["findings"]) and result["status"] == "findings":
         result["status"] = "clean"
-        if report["canary"]["result"] in CANARY_OK:      # a round whose canary missed proved nothing
-            state = load_json(stage_dir / "state.json", {})
-            state[reviewer] = {"clean_tree": report["tree"], "round": round_dir.name}
-            save_json(stage_dir / "state.json", state)
+        if latest and report["canary"]["result"] in CANARY_OK:      # a round whose canary missed proved nothing
+            state[reviewer]["clean_tree"] = report["tree"]
+    save_json(stage_dir / "state.json", state)
     save_json(round_dir / "ingest.json", report)
     print(f"rejected {args.finding}: {args.reason} ({args.cite})")
     return EXIT_OK
@@ -1438,7 +1482,8 @@ def cmd_plan_ingest(args: argparse.Namespace) -> int:
 
 # --------------------------------------------------------------------------- checks
 
-FAILED_TEST = re.compile(r"^(?:FAILED|ERROR) (\S+)", re.MULTILINE)   # pytest's short summary: failures and setup errors
+# pytest's short summary (`FAILED <id>`, `ERROR <id>`) and unittest's headers (`FAIL: <id>`, `ERROR: <id>`), not its `FAILED (failures=1)`.
+FAILED_TEST = re.compile(r"^(?:(?:FAILED|ERROR) (?!\()|(?:FAIL|ERROR): (?=\S+ \())(\S+)", re.MULTILINE)
 
 
 def targeted_tests(repo: Path, cfg: dict[str, Any], files: list[str]) -> list[str]:
@@ -1858,19 +1903,27 @@ def stamp_review(repo: Path, cfg: dict[str, Any], accept: bool) -> dict[str, Any
     new = rounds_since_stamp(stage_dir)
     if new and new[-1]["canary"]["result"] not in CANARY_OK:
         problems.append(f"canary {new[-1]['canary']['result']} in {new[-1]['round']}: re-run the round")
+    older = gate_view.summary(branch_dir(repo), view_caps(cfg), None, repo)["older"]
+    if older:
+        problems.append(f"{len(older)} older bug(s) wait for the user's decision: `fix them` or `#accept-gate`")
     rounds = rounds_since_stamp(stage_dir, whole_branch=True)    # the MR covers the whole branch, not one commit
     blocking, nits = open_findings(rounds)
     verdict = finish(problems, accept)
+    decided = load_json(stage_dir / gate_view.OLDER_DECIDED_FILE, []) + [f["key"] for f in older]
+    if older:                                                    # accepted: the user does not get asked again
+        save_json(stage_dir / gate_view.OLDER_DECIDED_FILE, decided)
     stamp = {"stage": STAGE_REVIEW, "tree": target.end, "verdict": verdict, "tier": tier, "tier_reason": reason,
-             "selected": [{"id": r.id, "reason": p.reason, "model": r.model_for(tier)} for r, p in selected],
+             "selected": [{"id": r.id, "reason": p.reason, "model": last_dispatched_model(r, tier, stage_dir, state)}
+                          for r, p in selected],
              "skipped": [{"id": p.id, "reason": p.reason} for _, p in picks if not p.selected],
              "rounds": [{"round": x["round"], "reviewers": [r["id"] for r in x["results"]],
                          "canary": x["canary"], "seconds": x.get("seconds"),
                          "blocking_found": sum(1 for r in x["results"] for f in r["findings"]
-                                               if f["severity"] in BLOCKING and f["state"] != "dropped"),
+                                               if f["severity"] in BLOCKING and f["state"] != "dropped" and not f.get("older")),
                          "dropped": sum(1 for r in x["results"] for f in r["findings"] if f["state"] == "dropped")}
                         for x in rounds],
-             "open_nits": nits, "open_blocking": blocking if verdict == VERDICT_ACCEPTED else [], "at": now_iso()}
+             "open_nits": nits, "at": now_iso(),
+             "open_blocking": blocking if verdict == VERDICT_ACCEPTED else [b for b in blocking if b.get("key") in decided]}
     mark_stamped(stage_dir, STAGE_REVIEW, repo)
     return stamp
 
@@ -1985,62 +2038,59 @@ def cmd_stamp(args: argparse.Namespace) -> int:
 
 # --------------------------------------------------------------------------- summary, status, explain
 
-def tested_table(cfg: dict[str, Any], tree: str, checks: dict[str, Any] | None, review: dict[str, Any] | None,
-                 skip: dict[str, Any] | None) -> str:
-    """The "How it was tested" table: one row per report kind, always, so nothing goes missing silently."""
+def check_result(c: dict[str, Any]) -> str:
+    """One check that ran, as "How it was tested" names it; only a failure needs its log."""
+    return (f"{c['id']} {c['status'].upper()}" + (f" [{c['note']}]" if c.get("note") else "")
+            + (f" {c['seconds']}s" if c.get("seconds") else "")
+            + (f", log {c['log']}" if c["status"] == STATUS_FAIL and c.get("log") else ""))
+
+
+def tested_summary(cfg: dict[str, Any], tree: str, checks: dict[str, Any] | None, review: dict[str, Any] | None,
+                   skip: dict[str, Any] | None) -> str:
+    """"How it was tested", in a few lines: each kind that took part, then what is missing."""
     check_s = sum(c.get("seconds") or 0 for c in (checks or {}).get("checks", []))
     review_s = sum(x.get("seconds") or 0 for x in (review or {}).get("rounds", []))
-    rows = [f"How it was tested: tree {tree[:TREE_SHORT_LEN]}, tier {(checks or review or {}).get('tier', '?')}, "
-            f"gate time {round(check_s + review_s)}s (checks {round(check_s)}s, review {round(review_s)}s)", "",
-            "| kind | what ran | result | evidence |", "| --- | --- | --- | --- |"]
-    unverified = []
-    all_rows = (checks or {}).get("checks", [])
+    lines = [f"How it was tested (tree {tree[:TREE_SHORT_LEN]}, gate time {round(check_s + review_s)}s):"]
+    missing = [] if checks else ["checks (no checks stamp)"]
+    undeclared = []
     for kind in cfg.get("report_kinds", []):
+        mine = [c for c in (checks or {}).get("checks", []) if c["kind"] == kind]
+        ran = [c for c in mine if c["status"] != STATUS_SKIPPED]
         if kind == "review":
             continue
-        mine = [c for c in all_rows if c["kind"] == kind]
-        ran = [c for c in mine if c["status"] != STATUS_SKIPPED]
-        if not checks:
-            rows.append(f"| {kind} | — | NOT RUN: no checks stamp | — |")
-            continue
-        if not ran:
-            why = "; ".join(f"{c['id']}: {c.get('note') or c['reason']}" for c in mine) or "no check of this kind declared"
-            rows.append(f"| {kind} | — | n/a ({why}) | — |")
-            unverified += [c["id"] for c in mine if c["kind"] == "real"]
-            continue
-        what = ", ".join(f"{c['id']}" + (f" ({c['seconds']}s)" if c.get("seconds") else "") for c in ran)
-        result = ", ".join(f"{c['id']}: {c['status'].upper()}" + (f" [{c['note']}]" if c.get("note") else "") for c in ran)
-        evidence = ", ".join(c["log"] for c in ran if c.get("log")) or "—"
-        rows.append(f"| {kind} | {what} | {result} | {evidence} |")
+        if ran:
+            lines.append(f"- {kind}: " + ", ".join(check_result(c) for c in ran))
+        elif mine:
+            missing.append(f"{kind} (" + "; ".join(f"{c['id']}: {c.get('note') or c['reason']}" for c in mine) + ")")
+        elif checks:
+            undeclared.append(kind)
     if "review" in cfg.get("report_kinds", []):
         if review:
-            n_rev = len(review["selected"])
-            canaries = ", ".join(f"{x['round']}: {x['canary']['result']}, {x.get('seconds')}s"
-                                 for x in review["rounds"]) or "no round run"
             found = sum(x["blocking_found"] for x in review["rounds"])
-            rows.append(f"| review | {n_rev} reviewers, {len(review['rounds'])} rounds, canary {canaries} | "
-                        f"{review['verdict']}: {found} blocking found and resolved, {len(review['open_nits'])} nits open | "
-                        f"gate review rounds |")
+            lines.append(f"- review: {review['verdict']}, {len(review['selected'])} reviewers, {len(review['rounds'])} rounds, "
+                         f"{found} blocking found and resolved, {len(review['open_nits'])} nits open")
         else:
-            rows.append("| review | — | NOT RUN: no review stamp | — |")
+            missing.append("review (no review stamp)")
     if skip:
-        rows.append(f"| user skip | {skip.get('kind')} at {skip.get('at')} | skipped at the user's request | — |")
-    rows.append(f"| not verified | {', '.join(unverified) + '; ' if unverified else ''}{NOT_VERIFIED_NOTE} | "
-                "needs your eyes | — |")
-    return "\n".join(rows)
+        missing.append(f"{skip.get('kind')} (skipped at your request)")
+    if undeclared:
+        missing.append("no check declared for " + ", ".join(undeclared))
+    if missing:
+        lines.append("- missing: " + "; ".join(missing))
+    return "\n".join(lines)
 
 
 def cmd_summary(args: argparse.Namespace) -> int:
-    """Print the How-it-was-tested table (--tested) or the full MR summary block."""
+    """Print the session's How-it-was-tested lines (--tested) or the full MR summary block."""
     repo = repo_root(args.repo)
     cfg = load_config(repo)
     tree = head_tree(repo) if args.head else index_tree(repo)
     tdir = tree_dir(repo, tree)
     review, checks = load_json(tdir / "review.json", None), load_json(tdir / "checks.json", None)
     skip = load_json(tdir / USER_SKIP_FILE, None)
-    table = tested_table(cfg, tree, checks, review, skip)
+    tested = tested_summary(cfg, tree, checks, review, skip)
     if args.tested:
-        print(table)
+        print(tested)
         return EXIT_OK
     lines = ["## Gate summary", ""]
     if review:
@@ -2062,7 +2112,7 @@ def cmd_summary(args: argparse.Namespace) -> int:
                         for f in load_json(tdir / f"audit-{mode}.json", {}).get("leftovers", [])})
     if leftovers:
         lines += ["", "Leftovers (untracked, not committed; clean up): " + ", ".join(leftovers)]
-    lines += ["", table]
+    lines += ["", tested]
     print("\n".join(lines))
     return EXIT_OK
 
@@ -2214,7 +2264,7 @@ def cmd_calibrate_score(args: argparse.Namespace) -> int:
         out = Path(e["out"])
         s = score_fixture(out.read_text(encoding="utf-8"), Path(e["fixture"]), e["id"], Path(e["workspace"])) \
             if out.exists() \
-            else {"result": "invalid", "error": "output not saved", "false_positives": 0}
+            else {"result": "invalid", "error": gate_view.NOT_SAVED_ERROR, "false_positives": 0}
         if e.get("sha") != calibration_hash(by_id[e["id"]]):     # edited after prepare: it ran other text
             s = {"result": "stale", "error": "reviewer edited since calibrate-prepare", "false_positives": 0}
         scores.setdefault(e["id"], {})[e["variant"]] = s | {"seconds": durations.get(e["name"]), "sha": e.get("sha")}
@@ -2336,7 +2386,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--plan")
     p.add_argument("--accept", action="store_true", help="consume the user's #accept-gate token")
     p.add_argument("--approve", action="store_true", help="plan only: consume the user's #approve-plan token")
-    p = add("summary", cmd_summary, "MR summary, or --tested for the test table")
+    p = add("summary", cmd_summary, "MR summary, or --tested for the session's test table and divergences")
     p.add_argument("--tested", action="store_true")
     p.add_argument("--head", action="store_true", help="use HEAD's tree instead of the index")
     add("status", cmd_status, "where this branch's run stands")
@@ -2357,11 +2407,19 @@ def refresh_view(repo_arg: str | None) -> Path | None:
     """Rewrite the branch's dashboard and status-line view (gate_view.py); never fails the command."""
     try:
         repo = repo_root(repo_arg)
-        page = gate_view.write(branch_dir(repo), view_caps(load_config(repo)))
+        page = gate_view.write(branch_dir(repo), view_caps(load_config(repo)), view_trees(repo), repo)
         if (repo / HANDOFF_FILE).exists():          # once written, kept current after every command
             write_handoff(repo)
         return page
     except Exception:  # a view is a convenience: a broken one must not break a gate step
+        return None
+
+
+def view_trees(repo: Path) -> dict[str, str] | None:
+    """The index and HEAD trees, for the dashboard's stamps; None when git can't say (a conflict, no commit)."""
+    try:
+        return {TREE_INDEX: index_tree(repo), TREE_HEAD: head_tree(repo)}
+    except GateError:
         return None
 
 

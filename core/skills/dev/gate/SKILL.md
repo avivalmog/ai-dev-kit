@@ -20,7 +20,7 @@ reviewer, never paraphrase a reviewer's output, and never write a stamp by hand.
 | mode | invocation | stops when |
 | --- | --- | --- |
 | plan | `/gate plan <plan.md>` | plan PASS, or `plan_rounds` attempts used |
-| review | `/gate review [--tripwire] [--only rules:<doc> \| --only checklist:<file>]` | review PASS, or `review_rounds` attempts used |
+| review | `/gate review [--tripwire] [--only rules:<doc> \| --only checklist:<file>]` | review PASS, or one reviewer used `review_rounds` attempts |
 | checks | `/gate checks` | checks PASS, or `check_rounds` attempts used |
 | push | `/gate push` | audit clean + push stamp, or `push_rounds` attempts used |
 | explain | `/gate explain [--range A..B] [--plan P]` | free: prints tier, reviewers, checks with reasons |
@@ -39,8 +39,12 @@ and the commit-hygiene rule H1 (every committed file is in the plan's table or t
 Every `gate.py` command ends by printing the run's dashboard path on stderr, with the Windows path too
 under WSL. Whenever you tell the user a gate result (a round ingested, checks run, an audit, a stamp, a
 cap reached, or the run registered), put that line in the same message. Every command rewrites that page
-(rounds, findings per what the user must decide, the plan changes, the code fixes and what is left; it
-reloads itself). Where the agent has a status line wired to `gate_view.py statusline` (the Claude adapter
+(it reloads itself). Its top box says reviewers are running, "all passed" with each stage's stamp, that older bugs wait for the user's decision, or why a stage did not pass:
+one line per invalid report, blocking finding, red check (log and last failing test) or hygiene hit, whether it
+is a code or a review problem and handled or open, then the user's replies. Below it: the plan changes, the
+code fixes, what is left, every row of the registered divergence log, and the findings the agent set aside, with
+its reasons. A rejected code-review finding above nit whose quoted text is still in the file keeps the top box from saying
+"all passed" and asks the user: `fix them` or `leave them`. When a stage stops, tell the user the same few lines that box shows: the reasons, then the replies. Where the agent has a status line wired to `gate_view.py statusline` (the Claude adapter
 does this), it shows the current stage, round, attempts and open findings.
 
 **Handoff.** A passing plan stamp, and any stage running out of tries, writes `<repo>/HANDOFF.md` and
@@ -97,28 +101,32 @@ A passing plan stamp prints `handoff:` (see Register the run); the plan's path i
 
 1. `git add <explicit paths>`. Never `-A`, `.`, `-u` or a directory; the hook blocks them.
 2. `$G review-prepare --repo "$R"`. Only reviewers whose scope changed since they were last clean are
-   dispatched; a `note` ⇒ go to step 6. Four rules keep rounds short:
-   - **Logic first, quality last.** While any logic reviewer is dispatched, the quality reviewers wait
-     (`deferred` in the output). They run as a final polish round once logic is clean, because a logic
-     fix rewrites the code they would review.
+   dispatched; a `note` ⇒ go to step 6. These rules keep rounds short:
+   - **One round.** Every selected reviewer is dispatched together, once.
+   - **Real defects block, nothing else.** A `blocker` or `should-fix` stops the gate. A `nit` (naming, constants,
+     style, duplication) is listed on the dashboard and never does.
+   - **Older bugs are the user's call.** A finding marked `older` (the change neither caused nor worsened it)
+     costs no attempt. `stamp` refuses until it is fixed or accepted, so stop and ask: `fix them` or `#accept-gate`.
    - **Exclusions.** A reviewer's `exclude` globs (`default-gates.toml`) are never sent to it: test files
      never reach `polish` or `data-schema`.
    - **Delta re-review.** A reviewer with an earlier valid review on this branch is sent only the files
      and diff changed since that review, plus its own still-open findings to re-check (`rereview-note.md`,
-     appended after the calibrated prompt). Its first review, or one after an invalid report, covers the
-     whole change.
+     appended after the calibrated prompt). Reading the changed parts of those files is enough, it reports only
+     what those changes break, and it runs at `standard` at most. A reviewer with no valid review yet covers the
+     whole change, reading each file end to end.
    - **Re-run only where needed.** Once clean, a reviewer with `rerun_skip` (`default-gates.toml`) is not
      re-run when only those paths changed: a test-only fix re-runs the `tests` reviewer alone. A
-     reviewer with open findings always re-runs.
+     reviewer with open findings always re-runs, and so does one with an older bug still open, on any new code.
    - **No new scope.** On a delta re-review, a new should-fix on lines that did not change since that
-     reviewer's base is kept as a nit (`late` on the finding), so it shows on the dashboard but does not
-     block. A blocker always blocks, and so does an earlier finding re-reported because it is not fixed.
+     reviewer's base, older or not, is kept as a nit (`late` on the finding), so it shows on the dashboard but
+     does not block. A blocker always stands, and so does an earlier finding re-reported because it is not fixed.
 3. Dispatch, save, `$G review-ingest --repo "$R"`.
 4. Triage every open finding: verify it against the code, don't agree performatively.
-   - Real ⇒ fix it. Logic-stage findings first, then quality.
+   - Real ⇒ fix it.
    - Wrong ⇒ `$G reject --repo "$R" --finding <reviewer>#<n> --cite <file:line> --reason "<why>"`.
      Add `--stage-dir plan`, `tripwire` or `adhoc` for those rounds. One rejection per finding;
-     a re-raised one stays open and goes in the MR.
+     a re-raised one stays open and goes in the MR. Never reject a real problem to get past the gate, even
+     one older than this change: leave it open, so the user decides.
    - Either way, tell the dashboard: `$G note --repo "$R" --finding <reviewer>#<n> --done "<Fixed: what
      changed, in easy English>"` (or "Rejected: why"). Add `--plain "<what goes wrong, easy English>"`
      when the reviewer's `plain` line is missing or unclear. Dashboard-only; it changes no decision.
@@ -159,20 +167,24 @@ and the report must say the review is unproven.
 ## Attempts, and the only stop
 
 An attempt is a **failed** run: a review or plan round with blocking findings or an invalid reviewer;
-a checks run with a red check; a branch audit with hits. A run that passes costs nothing.
+a checks run with a red check; a branch audit with hits. A run that passes costs nothing. In a review
+each reviewer has its own count, so only the reviewers that failed a round use an attempt.
 Once a stage's failures reach its cap, `gate.py` exits 3 before running again. Then **stop and ask
 the user**. Show:
 - what each attempt tried;
 - the open findings or the failing log tail;
 - the three replies they can give:
   - `#accept-gate`: continue, findings go in the MR. Then `$G stamp ... --accept`.
-  - direction: then `$G reset-attempts --repo "$R" --stage <stage>`.
+  - `run again`, or any other direction: then `$G reset-attempts --repo "$R" --stage <stage>`. `review-prepare`
+    sends a reviewer whose last report was invalid because it did not read its files one model tier up
+    (`light` to `standard`, `standard` to `strong`).
   - `#abort`: stop here.
 
 ## Every session ends with
 
 `$G summary --repo "$R" --tested` (`--head` after committing) printed verbatim in the final message:
-one row per test kind, always, with SKIPPED and unverified rows visible.
+each test kind that took part, then one `missing` line for what did not. The divergence log's rows are on the
+dashboard only: neither the session nor the MR carries them.
 
 ## /gate calibrate
 

@@ -299,5 +299,13 @@ class SkipHookTest(HookCase):
                              prompt)
 
 
+class SystemPythonTest(unittest.TestCase):
+    def test_the_engine_files_it_runs_compile_here(self) -> None:
+        # These two run under the system python3 (the status line, the hooks); the gate's own tests only use 3.12.
+        for name in ("gate_common.py", "gate_view.py"):
+            path = HOOKS.parents[2] / "core" / "skills" / "dev" / "gate" / name
+            compile(path.read_text(encoding="utf-8"), str(path), "exec")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -35,7 +35,7 @@ shared limit. Example: [`examples/project/reviewers/gates.toml`](../examples/pro
 | `base` | the branch the diff is measured against |
 | `max_usd` | budget for `kind = "real"` checks; `0` skips them and reports them as unverified |
 | `doc_maps` | docs that say which rules govern which path (usually `AGENTS.md` or `CLAUDE.md`) |
-| `[caps]` | failed attempts per stage before the flow stops and asks: `plan_rounds`, `review_rounds`, `check_rounds`, `push_rounds` |
+| `[caps]` | failed attempts per stage before the flow stops and asks: `plan_rounds`, `review_rounds` (counted per reviewer), `check_rounds`, `push_rounds` |
 | `[globs] data` | where this repo's stored data and queries live, for the `data-schema` reviewer |
 | `[tiers.full] always_when` | risky files: any change to one gets the full tier and the tripwire review |
 | `[tests] map` | changed module to its test file, for `{targeted_tests}` in a check |
@@ -49,8 +49,8 @@ Once a project declares any `[[checks]]`, they replace the shared fallback `pyte
 ## 3. Project reviewers
 
 A reviewer guards something only this project has: an API contract, a migration policy, an authoring
-guide. Each one is a `[[reviewer]]` table with an `id`, a `stage` (`logic` runs first, `quality` in the
-final polish round), `applies_to` globs, and one of three kinds:
+guide. Each one is a `[[reviewer]]` table with an `id`, a `stage` (a label, `logic` or `quality`;
+every reviewer runs in the same round), `applies_to` globs, and one of three kinds:
 
 | kind | you write | the example |
 | --- | --- | --- |

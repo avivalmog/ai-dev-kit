@@ -255,7 +255,7 @@ Then `/gate push`. It audits the branch (hygiene, forbidden paths, secrets, base
 freshness) and writes the push stamp; the hook blocks the push without it.
 
 The `<summary>` below is implement-plan's summary followed by `$G summary --repo <wt> --head`:
-the reviewer list with reasons, and the **How it was tested** table. End the
+the reviewer list with reasons, and **How it was tested**. End the
 session's final message with `$G summary --repo <wt> --tested --head`.
 
 Pick the command by the host in `git remote get-url origin`.

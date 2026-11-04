@@ -1,0 +1,17 @@
+# ai-dev-kit's own gates, merged tighten-only onto core/skills/dev/gate/default-gates.toml.
+version = 1
+base = "main"
+doc_maps = ["AGENTS.md"]
+
+# The two test commands from AGENTS.md. The shared `pytest -q` can't run here: it collects the calibration fixtures.
+[[checks]]
+id = "gate-tests"
+kind = "unit"
+when = ["core/skills/dev/gate/**"]
+run = "uv run --no-project --python 3.12 python -m unittest discover -s core/skills/dev/gate -p 'test_*.py'"
+
+[[checks]]
+id = "hook-tests"
+kind = "unit"
+when = ["adapters/claude/hooks/**", "core/skills/dev/gate/**"]
+run = "python3 -m unittest discover -s adapters/claude/hooks -p 'test_*.py'"
