@@ -10,7 +10,7 @@ Hard rules for this task:
 - Run it through the flow in `DEV_FLOW.md` (beside the global rules file): `/parallel-feature-workflow` (worktree, feature branch, never `main`), its plan gate, `implement-plan`, `/gate review`, `/gate checks`.
 - Real code in the project's normal layout, matching the surrounding style and idiom.
 - Add or extend tests covering the change.
-- Verification is `/gate checks`: the project's declared checks, with the full suite last. End with the **How it was tested** table.
+- Verification is `/gate checks`: the project's declared checks, with the full suite last. End with **How it was tested**.
 - List every file touched — producing side and consuming side both.
 - Index any agent-drafted content in the project's review index if it has one.
 - **One** commit unless I explicitly ask for a split; compact single-line subject.

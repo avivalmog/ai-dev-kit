@@ -151,7 +151,7 @@ Five sections, this order:
 
    Jargon coined during the implementation — ids, internal type names, stage numbers — is explained on first use in this section or not used here at all. The rest of the summary may assume it; this section may not.
 2. **What was implemented** — one bullet per plan item: done / changed / dropped. Name any phase skipped because the caller owned it.
-3. **How it was tested** — first `gate.py summary --tested` printed verbatim: one row per test kind (mechanical, unit, dry run, UI, real, review), with SKIPPED and unverified rows visible. Then, per claim the table doesn't cover, the exact command and its **actual** output. Anything not executed is labeled `unverified`. No "should work".
+3. **How it was tested** — first `gate.py summary --tested` printed verbatim: each test kind that took part, then one `missing` line for what did not. Then, per claim the table doesn't cover, the exact command and its **actual** output. Anything not executed is labeled `unverified`. No "should work".
 4. **Rule review** — the gate's rounds. For each round: the reviewers (with any calibration warning `review-prepare` printed) and the finding counts, from `gate.py status` and each round's `ingest.json`, cited by path. Cite those files; never narrate the review from memory — you are the party being audited. Then: findings fixed, rejections with their citations, anything open at the cap, and the nits. A reviewer that ran uncalibrated is stated here before anything else.
 5. **Gaps left to validate** — what the plan didn't cover, what the `[LOGIC]` decisions opened up, what no test touches.
 

@@ -283,7 +283,7 @@ the button sits next to "Download JSON". Out of scope: Excel files.</pre>
             <li><b>request.md</b>: your <code>feature:</code> text, verbatim.</li>
             <li><b>plan.md</b>: the plan, opening with its file table (every file it will create or change).</li>
             <li><b>divergence-log.md</b>: empty for now; every departure from the plan goes here.</li>
-            <li><code>gate.py init --request … --plan … --divergence-log …</code> registers the run for the branch and prints the <b>dashboard</b> path (plus the Windows path under WSL). The dashboard reloads itself and opens with whether you need to decide anything.</li>
+            <li><code>gate.py init --request … --plan … --divergence-log …</code> registers the run for the branch and prints the <b>dashboard</b> path (plus the Windows path under WSL). The dashboard reloads itself. Its top box says that reviewers are running, that everything passed (each stage's stamp), that it passed but the agent set serious problems aside, that older bugs need your decision, or why a stage did not pass, one line per blocker; the last three list the replies you can type.</li>
           </ol>
           <p class="why"><b>Why it is files, not chat.</b> Reviewers read these exact files. A long session gets compacted; the files survive it, and the fidelity reviewer can compare the code with what you asked and what was planned.</p>
         </div>
@@ -369,16 +369,17 @@ the button sits next to "Download JSON". Out of scope: Excel files.</pre>
             <li><b>Dispatch.</b> Every selected reviewer starts at once in a fresh read-only worker, at its model tier. Its prompt is one line pointing at the file <code>gate.py</code> wrote; the agent adds nothing, summarizes nothing.</li>
             <li><b>Save verbatim.</b> Each reply is saved unchanged to its <code>out</code> file before anyone acts on it.</li>
             <li><b>Ingest.</b> <code>review-ingest</code> drops a finding whose quote is not at the cited line, and marks a reviewer invalid if it skipped a file in its scope or reported the wrong tree.</li>
-            <li><b>Triage.</b> Each open finding is verified against the code: fixed (logic findings first), or rejected as wrong with <code>gate.py reject --cite file:line</code>. Each finding can be rejected only once: if the reviewer raises it again, it keeps blocking until it is fixed or the attempts run out and you decide. Each outcome is noted on the dashboard in plain English.</li>
+            <li><b>Triage.</b> Each open finding is verified against the code: fixed, or rejected as wrong with <code>gate.py reject --cite file:line</code>. Each finding can be rejected only once: if the reviewer raises it again, it keeps blocking until it is fixed or the attempts run out and you decide. Each outcome is noted on the dashboard in plain English.</li>
             <li>Re-stage and repeat until clean, then <code>stamp --stage review</code>.</li>
           </ol>
           <div class="sub">
-            <h3>Four rules that keep rounds short</h3>
+            <h3>The rules that keep rounds short</h3>
             <div class="rules">
-              <div class="rule"><b>Logic first, quality last</b><span>While any logic reviewer (fidelity, correctness) runs, quality reviewers wait. They run as a final polish round once logic is clean, because a logic fix rewrites what they would review.</span></div>
+              <div class="rule"><b>One round</b><span>Every selected reviewer runs together, so one fix never starts a separate round for the others.</span></div>
               <div class="rule"><b>Exclusions</b><span>A reviewer never sees files its lens exempts: test files never reach <code>polish</code> or <code>data-schema</code>.</span></div>
-              <div class="rule"><b>Delta re-review</b><span>A reviewer that already reviewed this branch gets only what changed since, plus its own still-open findings to re-check. The first review covers the whole change.</span></div>
-              <div class="rule"><b>No new scope</b><span>On a re-review, a new should-fix on unchanged lines is kept as a non-blocking nit. A blocker always blocks, and so does an old finding that is still not fixed.</span></div>
+              <div class="rule"><b>Delta re-review</b><span>A reviewer that already reviewed this branch gets only what changed since, plus its own still-open findings to re-check. It reads the changed parts of each file, reports only what those changes break, and runs at the standard model at most. The first review covers the whole change, reading each file end to end.</span></div>
+              <div class="rule"><b>Real defects block</b><span>A blocker or should-fix stops the commit. A nit (naming, constants, style, duplication) is listed and never does. An older bug the change did not cause costs no attempt and waits for your decision.</span></div>
+              <div class="rule"><b>No new scope</b><span>On a re-review, a new should-fix on unchanged lines, older or not, is kept as a non-blocking nit. A blocker always stands, and so does an old finding that is still not fixed.</span></div>
             </div>
             <p class="muted" style="font-size:.88rem">Plus <b>re-run only where needed</b>: once clean, a reviewer with <code>rerun_skip = ["@tests"]</code> is not re-run when only tests changed, so a test-only fix re-runs the <code>tests</code> reviewer alone.</p>
           </div>
@@ -471,7 +472,7 @@ the button sits next to "Download JSON". Out of scope: Excel files.</pre>
             <li>If the base moved under the branch, the affected checks re-run on the merge result. A merge conflict uses up all push attempts at once, because only a rebase can fix it and that is yours to do.</li>
             <li><code>stamp --stage push</code>. The hook re-checks every stamp for <code>HEAD^{tree}</code> before letting the push through.</li>
             <li>Push with an explicit refspec (<code>git push -u origin feat/&lt;slug&gt;</code>), never a bare <code>git push</code>, then open the MR (GitLab push options, or <code>gh pr create</code>).</li>
-            <li>The MR body: implement-plan's summary (decisions made for you, what was built, how it was tested, the review rounds, gaps), then <code>gate.py summary --head</code>: the reviewers with why each ran, and the <b>How it was tested</b> table.</li>
+            <li>The MR body: implement-plan's summary (decisions made for you, what was built, how it was tested, the review rounds, gaps), then <code>gate.py summary --head</code>: the reviewers with why each ran, and <b>How it was tested</b>.</li>
           </ol>
         </div>
         <div class="facts">
@@ -500,8 +501,8 @@ check runs    iff a changed file matches its when       and the tier is in its t
               <tr><td>plan</td><td>plan</td><td>the plan</td><td><span class="tier">standard</span></td><td>coverage, traceability, proportionality, reuse, consumer sweep, project rules, unproven claims</td></tr>
               <tr><td>fidelity</td><td>logic</td><td>all files</td><td><span class="tier">standard</span></td><td>does what you asked and the plan said; nothing added silently; divergences honest</td></tr>
               <tr><td>correctness</td><td>logic</td><td>code</td><td><span class="tier">standard</span> · <span class="tier">strong</span> at full</td><td>logic errors, unhandled cases, broken caller contracts, state and resource bugs, injection</td></tr>
-              <tr><td>polish</td><td>quality</td><td>code, no tests</td><td><span class="tier">light</span></td><td>lean (dead code, unrequested work, duplicates), reads like the code around it, no magic values</td></tr>
-              <tr><td>docs-drift</td><td>quality</td><td>all files; runs at every tier</td><td><span class="tier">light</span></td><td>docs, READMEs, rules files and help text the change made false or left missing</td></tr>
+              <tr><td>polish</td><td>quality</td><td>code, no tests</td><td><span class="tier">standard</span></td><td>lean (dead code, unrequested work, duplicates), reads like the code around it, no magic values</td></tr>
+              <tr><td>docs-drift</td><td>quality</td><td>all files; runs at every tier</td><td><span class="tier">standard</span></td><td>docs, READMEs, rules files and help text the change made false or left missing</td></tr>
               <tr><td>tests</td><td>quality</td><td>code</td><td><span class="tier">standard</span></td><td>changed behavior with no test that would fail without it; tests weakened to pass</td></tr>
               <tr><td>data-schema</td><td>quality</td><td>stored data and queries, no tests</td><td><span class="tier">light</span></td><td>a fact stored twice, unread columns, queries in loops, missing indexes</td></tr>
               <tr><td class="muted">project reviewers</td><td class="muted">either</td><td class="muted">per <code>reviewers/gates.toml</code></td><td class="muted">per config</td><td class="muted">agent prompts, rules-doc and checklist reviewers; a project can add, never remove</td></tr>
@@ -524,12 +525,13 @@ check runs    iff a changed file matches its when       and the tier is in its t
       <!-- stop -->
       <section class="stoprule" id="stop" style="scroll-margin-top:20px">
         <h2>The one stop rule</h2>
-        <p>The flow stops and waits for you <b>only when a step has used all its attempts</b>. An attempt is a <i>failed</i> run; a run that passes costs nothing. You get what each attempt tried and the open findings or the failing log tail, and reply with one of:</p>
+        <p>The flow stops and waits for you <b>only when a step has used all its attempts</b>, with the two exceptions below. An attempt is a <i>failed</i> run; a run that passes costs nothing. In a review each reviewer has its own count, five by default. You get what each attempt tried and the open findings or the failing log tail, and reply with one of:</p>
         <div class="replies">
           <div class="reply"><code>#accept-gate</code><span>Continue; the open findings are listed in the MR.</span></div>
           <div class="reply"><span><b>Direction</b></span><span>Tell the agent what to do; the step gets fresh attempts.</span></div>
           <div class="reply"><code>#abort</code><span>Stop here.</span></div>
         </div>
+        <p style="font-size:.9rem">Two exceptions, tries left or not. The agent set aside a serious code-review finding whose quoted text is still in the file: you reply <code>fix them</code> or <code>leave them</code>. A reviewer found an older bug the change neither caused nor worsened: you reply <code>fix them</code> or <code>#accept-gate</code>.</p>
         <p style="font-size:.9rem">Never a stop: a real run with <code>max_usd = 0</code> (it is SKIPPED and reported unverified). Always a block: a failing test, even one that also fails on base.</p>
       </section>
 
@@ -554,10 +556,10 @@ check runs    iff a changed file matches its when       and the tier is in its t
       <section class="block" id="limits" style="scroll-margin-top:20px">
         <h2>Limits</h2>
         <ul class="steps">
-          <li><b>Every session ends with the How it was tested table</b> from <code>gate.py summary --tested</code>: one row per kind (mechanical, unit, dry run, UI, real, review) plus a "not verified" row. A kind that did not run says why.</li>
+          <li><b>Every session ends with How it was tested</b> from <code>gate.py summary --tested</code>: each kind that took part, then one line for what is missing, with why. The divergence log's rows are on the dashboard only.</li>
           <li><b>Stamps prevent omission, not forgery.</b> A determined agent could fabricate reviewer output; the MR links the raw outputs so you can spot-check them.</li>
           <li><b>Reviewers are models.</b> Calibration proves a reviewer can see a planted defect, not that it saw every real one.</li>
-          <li><b>Real-LLM output quality always needs your eyes.</b> It is the permanent "not verified" row.</li>
+          <li><b>Real-LLM output quality always needs your eyes.</b></li>
         </ul>
       </section>
 

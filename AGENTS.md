@@ -41,3 +41,4 @@ python3 -m unittest discover -s adapters/claude/hooks -p 'test_*.py'
 ```
 
 The hook tests import the engine through `~/.claude/skills/gate`, so they test the installed kit.
+`reviewers/gates.toml` runs these two as this repo's gate checks.

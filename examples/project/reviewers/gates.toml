@@ -6,7 +6,7 @@ max_usd = 0.0                  # real-run budget per gate run; 0 = real checks a
 doc_maps = ["AGENTS.md"]       # routing docs a reviewer reads to find the rules for a file
 
 [caps]                         # failed attempts per stage before the flow stops and asks you
-review_rounds = 3
+review_rounds = 5              # per reviewer
 
 [globs]
 data = ["src/orders/db/**"]    # appended to the shared @data: where this repo's stored data and queries live

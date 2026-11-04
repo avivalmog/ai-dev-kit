@@ -6,7 +6,7 @@
 version = 1
 base = "main"
 max_usd = 0.0              # real-run budget per gate run; 0 = real checks are skipped and reported unverified
-report_kinds = ["mechanical", "unit", "dry-run", "ui", "real", "review"]   # rows of "How it was tested"
+report_kinds = ["mechanical", "unit", "dry-run", "ui", "real", "review"]   # what "How it was tested" reports on
 exclude_paths = ["reviewers/calibration/**"]   # planted-defect fixtures: never shown to reviewers; shared-only key
 
 [globs]
@@ -22,7 +22,7 @@ tests = ["tests/**", "test/**", "**/test_*.py", "**/*_test.py", "**/conftest.py"
 
 [caps]                     # attempts per step before the flow stops and asks you
 plan_rounds = 2
-review_rounds = 3
+review_rounds = 5          # per reviewer: only the reviewers that failed a round use an attempt
 check_rounds = 3
 push_rounds = 2
 
@@ -55,9 +55,10 @@ always_when = []
 # rerun_skip: once a reviewer is clean, a change only to these paths does not re-run it. Every reviewer but
 # `tests` skips test-only changes; a reviewer with open findings always re-runs to check its fixes.
 # exclude: files the reviewer is never shown (its lens exempts them), e.g. tests for the code-only lenses.
-# stage: every `logic` reviewer must be clean before any `quality` reviewer runs (quality is the polish round).
+# stage: a label only; every code reviewer runs in the same round (`plan` is the plan gate's reviewer).
 # model / model_by_tier name a model tier (light | standard | strong), not a model; each agent maps the tier.
 # "light" for the pattern-matching lenses; deep-reasoning lenses keep the default (standard) or strong.
+# A re-review runs at standard at most, whatever is named here.
 [[shared]]
 id = "plan"
 stage = "plan"
@@ -82,7 +83,6 @@ rerun_skip = ["@tests"]
 exclude = ["@tests"]
 stage = "quality"
 applies_to = ["@code"]
-model = "light"
 
 [[shared]]
 id = "docs-drift"
@@ -90,7 +90,6 @@ rerun_skip = ["@tests"]
 stage = "quality"
 applies_to = ["**"]
 tiers = ["lite", "standard", "full"]
-model = "light"
 
 [[shared]]
 id = "tests"

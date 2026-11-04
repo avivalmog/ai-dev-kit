@@ -63,9 +63,10 @@ outside the branch.
 
 ## Two rules for every development session, gated or not
 
-1. The final message carries the **How it was tested** table from
-   `gate.py summary --tested`, verbatim, SKIPPED and unverified rows included.
-2. The flow stops and asks only when a step has used all its attempts, or when
+1. The final message carries **How it was tested** from `gate.py summary --tested`,
+   verbatim: what took part, then what is missing.
+2. The flow stops and asks only when a step has used all its attempts, when the
+   agent set a serious finding aside, when a reviewer found an older bug, or when
    a hard rule in this file stops it.
 
 # Testing Rules

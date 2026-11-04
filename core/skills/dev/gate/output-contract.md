@@ -17,7 +17,8 @@ the last ```json block of the reply; anything else in the reply is for humans.
       "quote": "<the offending text, copied exactly from that file at that line>",
       "why": "<one sentence: what is wrong>",
       "fix": "<the smallest change that resolves it>",
-      "plain": "<one short sentence in easy English for someone who has not read the code: what goes wrong for the person using it. No file, function or variable names>"
+      "plain": "<one short sentence in easy English for someone who has not read the code: what goes wrong for the person using it. No file, function or variable names>",
+      "older": "<optional: true when the defect was already in the code and this change neither caused nor worsened it>"
     }
   ]
 }
@@ -36,8 +37,12 @@ Severity:
 
 | severity | meaning | effect |
 | --- | --- | --- |
-| blocker | wrong behaviour, a broken rule, a missing ask, a test that no longer proves anything | blocks the gate |
-| should-fix | a real defect of your lens that a careful reviewer would not let merge | blocks the gate |
-| nit | taste, or a minor improvement | listed in the MR, never blocks |
+| blocker | wrong behaviour in the main use, a broken project rule, a missing ask, a test that no longer proves anything | blocks the gate |
+| should-fix | a real defect: a wrong result in a case real callers can hit, changed behaviour with no test that would fail without it, a doc the change made false | blocks the gate |
+| nit | not a defect: naming, constants, style, duplication, a missing note in the divergence log | listed, never blocks |
 
-Keep the prose before the block under 400 words, and report at most 10 findings, most severe first.
+This table overrides any severity in your lens's own table. For a blocker or a should-fix, `why` must name the concrete failure: this input or step, this wrong result. If you cannot name one, it is a nit.
+
+Report a real defect even when this change did not cause it, and set `older` to true. It costs no attempt; the user decides whether to fix it.
+
+A clean change has no findings, and that is the expected answer. Keep the prose before the block under 100 words, and report at most 10 findings, most severe first.

@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -282,6 +283,10 @@ class OutputTest(RepoCase):
         self.assertEqual(gate.score_fixture(self.output("t", [], ["a.py"]), fx, "r")["result"], "missed")
         write(fx, "expected.json", json.dumps({"clean": True}))
         self.assertEqual(gate.score_fixture(self.output("t", [hit], ["a.py"]), fx, "r")["result"], "noisy")
+        nit = {**hit, "severity": "nit"}
+        self.assertEqual(gate.score_fixture(self.output("t", [nit], ["a.py"]), fx, "r")["result"], "clean")
+        write(fx, "expected.json", json.dumps({"id": "MV1", "file": "a.py", "line": 2}))
+        self.assertEqual(gate.score_fixture(self.output("t", [nit], ["a.py"]), fx, "r")["result"], "caught")
 
 
 class StampTest(RepoCase):
@@ -379,17 +384,17 @@ class DeltaReviewTest(RepoCase):
             gate.cmd_review_prepare(gate.build_parser().parse_args(["review-prepare", "--repo", str(self.repo)]))
         return gate.load_json(gate.latest_round(self.stage_dir, None) / "dispatch.json", {})
 
-    def answer(self, dispatch: dict, findings: dict | None = None, invalid: tuple = ()) -> dict:
+    def answer(self, dispatch: dict, findings: dict | None = None, invalid: tuple = (), unread: tuple = ()) -> dict:
         """Every dispatched reviewer reports what it was assigned; `findings` maps a reviewer to its findings."""
         for e in dispatch["dispatch"]:
-            body = {"reviewer": e["id"], "tree": dispatch["tree"], "checked": e["files"],
+            body = {"reviewer": e["id"], "tree": dispatch["tree"], "checked": [] if e["id"] in unread else e["files"],
                     "findings": (findings or {}).get(e["id"], [])}
             Path(e["out"]).write_text("no block" if e["id"] in invalid else f"```json\n{json.dumps(body)}\n```")
         rdir = Path(dispatch["dispatch"][0]["out"]).parent
         return gate.ingest_round(self.repo, rdir, self.stage_dir, self.repo, dispatch["tree"])
 
     @staticmethod
-    def finding(line: int, severity: str = "should-fix", rid: str = "LN1", path: str = "src/pkg/big.py",
+    def finding(line: int, severity: str = "blocker", rid: str = "LN1", path: str = "src/pkg/big.py",
                 quote: str | None = None) -> dict:
         return {"id": rid, "severity": severity, "file": path, "line": line, "quote": quote or f"V{line} = {line}",
                 "why": "w", "fix": "f", "plain": "p"}
@@ -401,6 +406,22 @@ class DeltaReviewTest(RepoCase):
 
     def result(self, report: dict, rid: str) -> dict:
         return next(r for r in report["results"] if r["id"] == rid)
+
+    def reject(self, finding: str, *extra: str) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            gate.cmd_reject(gate.build_parser().parse_args(["reject", "--repo", str(self.repo), "--finding", finding,
+                                                            "--cite", "src/pkg/big.py:2", "--reason", "wrong", *extra]))
+
+    def test_a_reviewer_that_skipped_its_files_runs_and_is_stamped_one_model_tier_up(self) -> None:
+        self.edit_big(5)
+        first = self.prepare()
+        self.assertEqual(next(e for e in first["dispatch"] if e["id"] == "polish")["model_tier"], "standard")
+        self.assertEqual(self.result(self.answer(first, unread=("polish",)), "polish")["status"], "invalid")
+        again = self.prepare()
+        self.assertEqual(next(e for e in again["dispatch"] if e["id"] == "polish")["model_tier"], "strong")
+        self.answer(again)
+        stamp = gate.stamp_review(self.repo, self.cfg(), accept=False)
+        self.assertEqual(next(s for s in stamp["selected"] if s["id"] == "polish")["model"], "strong")
 
     def test_a_second_round_sees_only_the_change_and_rechecks_open_findings(self) -> None:
         self.edit_big(5)
@@ -414,47 +435,274 @@ class DeltaReviewTest(RepoCase):
         self.assertEqual([p["line"] for p in correctness["prior"]], [2])
         prompt = Path(correctness["prompt"]).read_text()
         self.assertIn("This is a re-review", prompt)
+        self.assertIn("read only the changed parts", prompt)
         self.assertIn(first["tree"], prompt)
         self.assertIn("quote: `V2 = 2`", prompt)
         patch = Path(prompt.split("The diff under review: `", 1)[1].split("`", 1)[0]).read_text()
         self.assertIn("+W = 2", patch)
         self.assertNotIn("V5", patch)                                                # reviewed already
         fidelity = next(e for e in second["dispatch"] if e["id"] == "fidelity")
-        self.assertEqual(fidelity["files"], ["src/pkg/other.py"])
+        self.assertEqual(fidelity["files"], ["src/pkg/other.py"])                    # clean, so only what changed
 
     def test_a_test_only_change_reruns_only_the_tests_reviewer(self) -> None:
         self.edit_big(5)
-        self.answer(self.prepare())                                                  # logic
-        self.answer(self.prepare())                                                  # then quality
+        self.answer(self.prepare())
         self.stage("tests/test_mod.py", "def test_f():\n    assert True\n")
         self.assertEqual([e["id"] for e in self.prepare()["dispatch"]], ["tests"])
 
     def test_a_new_should_fix_off_the_changed_lines_is_kept_as_a_nit(self) -> None:
         self.edit_big(5)
-        self.answer(self.prepare())
+        self.answer(self.prepare(), {"correctness": [self.finding(8)]})
         self.edit_big(12)
-        report = self.answer(self.prepare(), {"correctness": [self.finding(3), self.finding(12, quote="V12 = 1200"),
-                                                       self.finding(18, severity="blocker")]})
+        report = self.answer(self.prepare(), {"correctness": [
+            self.finding(3, severity="should-fix"), self.finding(12, severity="should-fix", quote="V12 = 1200"), self.finding(18)]})
         correctness = self.result(report, "correctness")
         self.assertEqual([f["severity"] for f in correctness["findings"]], ["nit", "should-fix", "blocker"])
         self.assertIn("unchanged since", correctness["findings"][0]["late"])
         self.assertEqual(correctness["status"], "findings")
         self.edit_big(14)
-        report = self.answer(self.prepare(), {"correctness": [self.finding(3)]})
+        report = self.answer(self.prepare(), {"correctness": [self.finding(3, severity="should-fix")]})
         self.assertEqual(self.result(report, "correctness")["status"], "clean")             # only a late one: passes
+
+    def test_a_real_defect_blocks_and_a_nit_does_not(self) -> None:
+        self.edit_big(5)
+        report = self.answer(self.prepare(), {"correctness": [self.finding(3, severity="should-fix")],
+                                              "polish": [self.finding(4, severity="nit", rid="MV1")]})
+        self.assertEqual(self.result(report, "correctness")["status"], "findings")
+        self.assertEqual(self.result(report, "polish")["status"], "clean")
+
+    def test_an_older_bug_costs_no_attempt_and_waits_for_the_user(self) -> None:
+        self.edit_big(5)
+        older = self.finding(3, severity="should-fix") | {"older": True}
+        report = self.answer(self.prepare(), {"correctness": [older]})
+        self.assertEqual(self.result(report, "correctness")["status"], "clean")
+        with self.assertRaises(gate.GateError) as ctx:
+            gate.stamp_review(self.repo, self.cfg(), accept=False)
+        self.assertIn("older bug", str(ctx.exception))
+        gate.TOKENS_DIR.mkdir(parents=True)
+        (gate.TOKENS_DIR / "accept-gate.json").write_text(json.dumps({"created": time.time(), "session": "s"}))
+        accepted = gate.stamp_review(self.repo, self.cfg(), accept=True)
+        self.assertEqual((accepted["verdict"], accepted["rounds"][-1]["blocking_found"]), ("ACCEPTED", 0))
+        stamp = gate.stamp_review(self.repo, self.cfg(), accept=False)                       # not asked twice
+        self.assertEqual((stamp["verdict"], [b["id"] for b in stamp["open_blocking"]]), ("PASS", ["LN1"]))  # on record
+
+    def test_an_older_bug_fixed_with_its_text_still_there_clears_at_the_re_check(self) -> None:
+        self.edit_big(5)
+        self.answer(self.prepare(), {"correctness": [self.finding(3, severity="should-fix") | {"older": True}]})
+        text = (self.repo / "src/pkg/big.py").read_text()
+        self.stage("src/pkg/big.py", text.replace("V3 = 3\n", "if not READY:\n    raise ValueError\nV3 = 3\n"))
+        second = self.prepare()
+        correctness = next(e for e in second["dispatch"] if e["id"] == "correctness")
+        self.assertEqual([p["line"] for p in correctness["prior"]], [3])                     # it is asked to re-check
+        self.answer(second)
+        self.assertEqual(gate.stamp_review(self.repo, self.cfg(), accept=False)["verdict"], "PASS")
+
+    def test_an_older_bug_whose_text_left_the_code_clears(self) -> None:
+        import gate_view
+
+        self.edit_big(5)
+        self.answer(self.prepare(), {"correctness": [self.finding(3, severity="should-fix") | {"older": True}]})
+        text = (self.repo / "src/pkg/big.py").read_text()
+        self.stage("src/pkg/big.py", text.replace("V3 = 3\n", "FIXED = 3\n"))
+        self.assertEqual(gate_view.summary(gate.branch_dir(self.repo), {}, None, self.repo)["older"], [])
+
+    def test_a_new_older_should_fix_on_unchanged_lines_is_only_listed_on_a_re_review(self) -> None:
+        import gate_view
+
+        self.edit_big(5)
+        self.answer(self.prepare(), {"correctness": [self.finding(8)]})
+        self.edit_big(12)
+        report = self.answer(self.prepare(), {"correctness": [self.finding(3, severity="should-fix") | {"older": True}]})
+        self.assertEqual(self.result(report, "correctness")["findings"][0]["severity"], "nit")
+        self.assertEqual(gate_view.summary(gate.branch_dir(self.repo), {}, None, self.repo)["older"], [])
+
+    def test_a_new_older_blocker_on_a_re_review_still_asks_the_user(self) -> None:
+        self.edit_big(5)
+        self.answer(self.prepare(), {"correctness": [self.finding(8)]})
+        self.edit_big(12)
+        report = self.answer(self.prepare(), {"correctness": [self.finding(3) | {"older": True}]})
+        self.assertEqual(self.result(report, "correctness")["findings"][0]["severity"], "blocker")
+        with self.assertRaises(gate.GateError) as ctx:
+            gate.stamp_review(self.repo, self.cfg(), accept=False)
+        self.assertIn("older bug", str(ctx.exception))
+
+    def test_an_older_bug_from_the_first_review_stays_the_users_call(self) -> None:
+        older = self.finding(3, severity="should-fix") | {"older": True}
+        self.edit_big(5)
+        self.answer(self.prepare(), {"correctness": [older]})
+        self.edit_big(12)
+        report = self.answer(self.prepare(), {"correctness": [older]})
+        self.assertEqual(self.result(report, "correctness")["findings"][0]["severity"], "should-fix")
+        with self.assertRaises(gate.GateError) as ctx:
+            gate.stamp_review(self.repo, self.cfg(), accept=False)
+        self.assertIn("older bug", str(ctx.exception))
+
+    def test_a_re_review_runs_at_standard_after_a_first_review_at_strong(self) -> None:
+        def correctness(dispatch: dict) -> dict:
+            return next(e for e in dispatch["dispatch"] if e["id"] == "correctness")
+
+        self.stage("src/pkg/other.py", "W = 1\n" + "# pad\n" * 400)                   # a big change: the full tier
+        first = self.prepare()
+        self.assertEqual(correctness(first)["model_tier"], "strong")
+        self.answer(first)
+        self.edit_big(5)
+        second = self.prepare()
+        self.assertEqual((correctness(second)["model_tier"], correctness(second)["base"]), ("standard", first["tree"]))
+        self.assertIn("do not look for other problems in unchanged code", Path(correctness(second)["prompt"]).read_text())
+        self.answer(second, unread=("correctness",))
+        self.assertEqual(correctness(self.prepare())["model_tier"], "strong")       # it did not read its files: one up
+
+    def test_a_finding_marked_older_still_blocks_outside_the_code_review(self) -> None:
+        self.edit_big(5)
+        tree = gate.index_tree(self.repo)
+        for name in (gate.STAGE_PLAN, gate.TRIPWIRE_DIR, gate.ADHOC_DIR):
+            with self.subTest(name):
+                stage_dir = gate.branch_dir(self.repo) / name
+                _, rdir = gate.next_round(stage_dir)
+                out = rdir / "lens.out.md"
+                body = {"reviewer": "lens", "tree": tree, "checked": [], "findings": [self.finding(2) | {"older": True}]}
+                out.write_text(f"```json\n{json.dumps(body)}\n```")
+                gate.save_json(rdir / "dispatch.json", {"tree": tree, "dispatch": [{"id": "lens", "out": str(out), "files": []}]})
+                report = gate.ingest_round(self.repo, rdir, stage_dir, self.repo, tree)
+                self.assertEqual(self.result(report, "lens")["status"], "findings")
+
+    def test_any_new_change_gets_every_reviewer(self) -> None:
+        self.edit_big(5)
+        self.answer(self.prepare())
+        self.stage("src/pkg/other.py", "W = 1\nX = 2\n")
+        with self.assertRaises(gate.GateError):
+            gate.stamp_review(self.repo, self.cfg(), accept=False)
+        self.assertEqual(sorted(e["id"] for e in self.prepare()["dispatch"]),
+                         ["correctness", "docs-drift", "fidelity", "polish", "tests"])
+
+    def test_the_reviewer_of_an_older_bug_re_checks_a_test_only_fix(self) -> None:
+        self.edit_big(5)
+        self.answer(self.prepare(), {"correctness": [self.finding(3, severity="should-fix") | {"older": True}]})
+        self.stage("tests/test_mod.py", "def test_f():\n    assert True\n")
+        self.assertEqual(sorted(e["id"] for e in self.prepare()["dispatch"]), ["correctness", "tests"])
+
+    def test_rejecting_a_finding_keeps_the_older_bug_re_check(self) -> None:
+        self.edit_big(5)
+        self.answer(self.prepare(), {"correctness": [self.finding(2), self.finding(3, severity="should-fix") | {"older": True}]})
+        self.reject("correctness#0")
+        self.assertTrue(gate.load_json(self.stage_dir / "state.json", {})["correctness"]["older"])
+
+    def test_a_rejected_older_bug_stops_asking_and_forces_no_re_check(self) -> None:
+        import gate_view
+
+        older = self.finding(3, severity="should-fix") | {"older": True}
+        self.edit_big(5)
+        self.answer(self.prepare(), {"correctness": [older]})
+        self.edit_big(6)
+        self.answer(self.prepare(), {"correctness": [older]})                        # reported twice, then set aside
+        self.reject("correctness#0")
+        view = gate_view.summary(gate.branch_dir(self.repo), {}, None, self.repo)
+        self.assertEqual(view["older"], [])
+        self.assertNotIn("fixed since, or you chose to leave it", gate_view.render(view))
+        self.stage("tests/test_mod.py", "def test_f():\n    assert True\n")
+        self.assertEqual([e["id"] for e in self.prepare()["dispatch"]], ["tests"])
+
+    def _page_after_two_reports(self, finding: dict) -> str:
+        import gate_view
+
+        self.edit_big(5)
+        self.answer(self.prepare(), {"correctness": [finding]})
+        self.edit_big(6)
+        self.answer(self.prepare(), {"correctness": [finding]})
+        return gate_view.render(gate_view.summary(gate.branch_dir(self.repo), {}, None, self.repo))
+
+    def test_a_finding_reported_again_is_never_shown_as_fixed(self) -> None:
+        page = self._page_after_two_reports(self.finding(3))
+        self.assertNotIn("Fixed before the next round", page)
+        self.assertIn("3 &middot; Found, not handled yet <span class=muted>(1)</span>", page)
+
+    def test_an_older_bug_reported_again_gets_one_card(self) -> None:
+        page = self._page_after_two_reports(self.finding(3, severity="should-fix") | {"older": True})
+        self.assertIn("3 &middot; Found, not handled yet <span class=muted>(1)</span>", page)
+
+    def test_rejecting_in_an_earlier_round_leaves_a_newer_finding_blocking(self) -> None:
+        self.edit_big(5)
+        self.answer(self.prepare(), {"correctness": [self.finding(2)]})
+        self.stage("tests/test_mod.py", "def test_f():\n    assert True\n")
+        self.answer(self.prepare(), {"correctness": [self.finding(3)]})
+        self.reject("correctness#0", "--round", "1")
+        with self.assertRaises(gate.GateError) as ctx:
+            gate.stamp_review(self.repo, self.cfg(), accept=False)
+        self.assertIn("correctness: not clean", str(ctx.exception))
+
+    def test_rejecting_in_an_earlier_round_leaves_the_newer_re_check(self) -> None:
+        older = self.finding(3, severity="should-fix") | {"older": True}
+        self.edit_big(5)
+        self.answer(self.prepare(), {"correctness": [older]})
+        self.edit_big(6)
+        self.answer(self.prepare(), {"correctness": [older]})
+        self.reject("correctness#0", "--round", "1")
+        self.assertTrue(gate.load_json(self.stage_dir / "state.json", {})["correctness"]["older"])
+
+    def test_the_re_review_note_says_which_findings_are_older(self) -> None:
+        self.edit_big(5)
+        self.answer(self.prepare(), {"correctness": [self.finding(3, severity="should-fix") | {"older": True}]})
+        self.edit_big(6)
+        correctness = next(e for e in self.prepare()["dispatch"] if e["id"] == "correctness")
+        self.assertIn("quote: `V3 = 3` (older: true)", Path(correctness["prompt"]).read_text())
+
+    def test_an_older_nit_forces_no_re_check(self) -> None:
+        self.edit_big(5)
+        self.answer(self.prepare(), {"polish": [self.finding(3, severity="nit", rid="MV1") | {"older": True}]})
+        self.stage("tests/test_mod.py", "def test_f():\n    assert True\n")
+        self.assertEqual([e["id"] for e in self.prepare()["dispatch"]], ["tests"])
+
+    def test_only_a_real_true_marks_a_finding_older(self) -> None:
+        self.edit_big(5)
+        report = self.answer(self.prepare(), {"correctness": [self.finding(3) | {"older": "false"}]})
+        self.assertEqual(self.result(report, "correctness")["status"], "findings")
+
+    def test_an_invalid_round_leaves_an_older_bug_open(self) -> None:
+        import gate_view
+
+        self.edit_big(5)
+        self.answer(self.prepare(), {"correctness": [self.finding(3, severity="should-fix") | {"older": True}]})
+        self.edit_big(6)
+        self.answer(self.prepare(), invalid=("correctness",))
+        older = gate_view.summary(gate.branch_dir(self.repo), {}, None, self.repo)["older"]
+        self.assertEqual([f["id"] for f in older], ["LN1"])
+
+    def test_a_re_raised_older_bug_is_still_re_checked(self) -> None:
+        finding = self.finding(3, severity="should-fix") | {"older": True, "state": "reraised"}
+        gate.save_json(self.stage_dir / "round-1" / "ingest.json", {
+            "tree": "t", "canary": {"result": "unavailable"},
+            "results": [{"id": "correctness", "status": "clean", "error": "", "findings": [finding]}]})
+        _, prior = gate.review_base(self.stage_dir, {"correctness": {"round": "round-1"}}, "correctness")
+        self.assertEqual([p["line"] for p in prior], [3])
+
+    def test_only_the_reviewer_that_failed_uses_an_attempt(self) -> None:
+        self.edit_big(5)
+        self.answer(self.prepare(), {"correctness": [self.finding(2)]})
+        with contextlib.redirect_stdout(io.StringIO()):
+            gate.cmd_review_ingest(gate.build_parser().parse_args(["review-ingest", "--repo", str(self.repo)]))
+        path = gate.branch_dir(self.repo) / "attempts.json"
+        self.assertEqual(gate.load_json(path, {})[gate.REVIEWER_ATTEMPTS], {"correctness": 1})
+        gate.count_failure(self.repo, "review", ["tests"])
+        attempts = gate.load_json(path, {})
+        self.assertEqual((attempts["review"], attempts[gate.REVIEWER_ATTEMPTS]), (1, {"correctness": 1, "tests": 1}))
+        gate.count_failure(self.repo, "review", ["tests"])
+        self.assertEqual(gate.load_json(path, {})["review"], 2)                              # the worst reviewer's count
+        gate.reset_attempt(self.repo, "review")
+        self.assertEqual(gate.load_json(path, {})["review"], 0)
+        self.assertNotIn(gate.REVIEWER_ATTEMPTS, gate.load_json(path, {}))
 
     def test_an_unfixed_earlier_finding_still_blocks(self) -> None:
         self.edit_big(5)
-        self.answer(self.prepare(), {"correctness": [self.finding(2)]})
+        self.answer(self.prepare(), {"correctness": [self.finding(2, severity="should-fix")]})
         self.stage("src/pkg/other.py", "W = 2\n")
-        report = self.answer(self.prepare(), {"correctness": [self.finding(2)]})
+        report = self.answer(self.prepare(), {"correctness": [self.finding(2, severity="should-fix")]})
         correctness = self.result(report, "correctness")
         self.assertEqual((correctness["status"], correctness["findings"][0]["severity"]), ("findings", "should-fix"))
 
     def test_an_invalid_report_keeps_the_last_valid_base(self) -> None:
         self.edit_big(5)
         first = self.prepare()
-        self.answer(first)
+        self.answer(first, {"correctness": [self.finding(2)]})
         self.edit_big(12)
         self.answer(self.prepare(), invalid=("correctness",))
         self.edit_big(14)
@@ -462,27 +710,22 @@ class DeltaReviewTest(RepoCase):
         self.assertEqual(correctness["base"], first["tree"])
 
 
-    def test_quality_waits_until_logic_is_clean(self) -> None:
+    def test_every_reviewer_runs_in_one_round(self) -> None:
         self.edit_big(5)
         first = self.prepare()
-        self.assertEqual(sorted(e["id"] for e in first["dispatch"]), ["correctness", "fidelity"])
-        self.assertEqual(first["deferred"]["ids"], ["polish", "docs-drift", "tests"])
+        self.assertEqual(sorted(e["id"] for e in first["dispatch"]), ["correctness", "docs-drift", "fidelity", "polish", "tests"])
         self.assertNotIn("canary", first)                                            # proven by calibrate only
         self.answer(first, {"correctness": [self.finding(5, quote="V5 = 500")]})
-        self.assertEqual([e["id"] for e in self.prepare()["dispatch"]], ["correctness"])   # still logic only
         self.edit_big(6)
-        self.answer(self.prepare())
-        third = self.prepare()
-        self.assertEqual([e["id"] for e in third["dispatch"]], ["polish", "docs-drift", "tests"])
-        self.assertNotIn("deferred", third)
+        self.assertEqual(sorted(e["id"] for e in self.prepare()["dispatch"]),              # a fix: all read what changed
+                         ["correctness", "docs-drift", "fidelity", "polish", "tests"])
 
     def test_excluded_paths_never_reach_the_reviewer(self) -> None:
         self.edit_big(5)
         self.stage("tests/test_mod.py", "def test_f():\n    assert True\n")
-        self.answer(self.prepare())
-        quality = {e["id"]: e["files"] for e in self.prepare()["dispatch"]}
-        self.assertEqual(quality["polish"], ["src/pkg/big.py"])
-        self.assertEqual(quality["tests"], ["src/pkg/big.py", "tests/test_mod.py"])
+        files = {e["id"]: e["files"] for e in self.prepare()["dispatch"]}
+        self.assertEqual(files["polish"], ["src/pkg/big.py"])
+        self.assertEqual(files["tests"], ["src/pkg/big.py", "tests/test_mod.py"])
 
 
 class AuditTest(RepoCase):
@@ -644,6 +887,11 @@ class ChecksAndStampsTest(RepoCase):
         fidelity = next(e for e in dispatch["dispatch"] if e["id"] == "fidelity")
         self.assertNotIn("docs/guide.md", fidelity["files"])
         self.assertIn("src/pkg/mod.py", fidelity["files"])
+
+    def test_polish_and_docs_drift_are_not_on_the_light_tier(self) -> None:
+        # A first review reads every file end to end; on light they did not finish big files, so the review was invalid.
+        reviewers = {r.id: r for r in gate.all_reviewers(self.cfg(), self.repo)}
+        self.assertEqual((reviewers["polish"].model, reviewers["docs-drift"].model), ("standard", "standard"))
 
     def test_dispatch_entry_is_agent_neutral(self) -> None:
         self.stage("src/pkg/mod.py", "def f(x):\n    return x * 3\n")
@@ -918,7 +1166,7 @@ class GateViewTest(RepoCase):
         text = page.read_text()
         self.assertIn("round-1", text)
         self.assertIn("3 &middot; Found, not handled yet", text)
-        self.assertNotIn("Divergence", text)
+        self.assertIn("No divergence log registered", text)
         self.assertEqual(gate_view.status_line(view), "gate feat/x · code review r2 · attempts 0/3 · reviewing (1)")
         gate.save_json(running / "ingest.json", {"canary": {"result": "caught"}, "results": [
             {"id": "lean", "status": "clean", "findings": []}]})
@@ -935,16 +1183,467 @@ class GateViewTest(RepoCase):
         gate.save_json(rdir / "ingest.json", {"canary": {"result": "caught"}, "seconds": 600, "results": [
             {"id": "correctness", "status": "findings", "findings": [finding, {**finding, "severity": "nit", "plain": "A name is odd."}]}]})
         gate.save_json(bdir / "attempts.json", {"review": 1})
-        self.assertIn("Nothing for you to decide yet", gate_view.render(gate_view.summary(bdir, {"review": 3})))
+        self.assertIn("Not committed yet: the agent is fixing this", gate_view.render(gate_view.summary(bdir, {"review": 3})))
         with contextlib.redirect_stdout(io.StringIO()):
             gate.main(["note", "--repo", str(self.repo), "--finding", "correctness#0", "--done", "Fixed: no freeze."])
         text = gate_view.render(gate_view.summary(bdir, {"review": 1}))
-        for part in ("You need to decide", "The page freezes.", "What the agent did:</b> Fixed: no freeze.",
-                     "#accept-gate", "about 10 minutes", "all 1 of them", "2 &middot; Fixes made to the code", "Waiting for a reviewer to confirm",
+        for part in ("Not committed: your choice is needed", "The page freezes.", "What the agent did:</b> Fixed: no freeze.",
+                     "#accept-gate", "about 10 minutes", "A reviewer checks the agent's fixes.", "handled, waiting for a reviewer to re-check it", "2 &middot; Fixes made to the code", "Waiting for a reviewer to confirm",
                      "<span class='badge nice'>Nice to have</span>A name is odd.", "1 important"):
             self.assertIn(part, text)
         with self.assertRaises(gate.GateError):
             gate.cmd_note(gate.build_parser().parse_args(["note", "--repo", str(self.repo), "--finding", "correctness#5"]))
+
+    def _set_aside_page(self, severity: str, body: str, file: str = "src/pkg/set_aside.py") -> str:
+        """The page once a finding on `BAD = 1` was rejected, with `body` staged and stamped as the current code."""
+        import gate_view
+
+        self.stage("src/pkg/set_aside.py", body)
+        finding = {"id": "R1", "severity": severity, "file": file, "line": 1, "quote": "BAD = 1",
+                   "why": "w", "fix": "f", "plain": "The judge is wrong.", "state": "rejected", "key": "k1"}
+        self._ingest([{"id": "lean", "status": "clean", "error": "", "findings": [finding]}])
+        tree = gate.index_tree(self.repo)
+        for stage in ("review", "checks"):
+            gate.save_json(gate.tree_dir(self.repo, tree) / f"{stage}.json", {"verdict": "PASS"})
+        return gate_view.render(gate_view.summary(gate.branch_dir(self.repo), {"review": 3},
+                                                  gate.view_trees(self.repo), self.repo))
+
+    def test_a_serious_finding_the_agent_set_aside_stops_all_passed(self) -> None:
+        text = self._set_aside_page("blocker", "BAD = 1\n")
+        self.assertIn("Review and tests passed, but the agent did not fix 1 serious problem</h2>", text)
+        self.assertIn("<li>The judge is wrong.</li>", text)
+        self.assertIn("<b>fix them</b>", text)
+        self.assertNotIn("All passed", text)
+
+    def test_a_set_aside_box_claims_no_pass_nothing_earned(self) -> None:
+        import gate_view
+
+        self.stage("src/pkg/set_aside.py", "BAD = 1\n")
+        finding = {"id": "R1", "severity": "blocker", "file": "src/pkg/set_aside.py", "line": 1, "quote": "BAD = 1",
+                   "why": "w", "fix": "f", "plain": "The judge is wrong.", "state": "rejected", "key": "k1"}
+        self._ingest([{"id": "lean", "status": "clean", "error": "", "findings": [finding]}])
+        text = gate_view.render(gate_view.summary(gate.branch_dir(self.repo), {"review": 3},
+                                                  gate.view_trees(self.repo), self.repo))
+        self.assertIn("<h2>The agent did not fix 1 serious problem</h2>", text)
+        self.assertIn("The remaining checks are still to run.", text)
+        self.assertNotIn("Committed, but", text)
+        self.assertNotIn("Review and tests passed", text)
+
+    def test_a_stamp_or_a_skip_token_ends_the_stop(self) -> None:
+        import gate_view
+
+        self.stage("src/pkg/accepted.py", "x = 1\n")
+        finding = {"id": "C1", "severity": "blocker", "file": "src/pkg/accepted.py", "line": 1, "quote": "x = 1",
+                   "why": "w", "fix": "f", "plain": "Wrong.", "state": "open", "key": "k1"}
+        self._ingest([{"id": "lean", "status": "findings", "error": "", "findings": [finding]}])
+        bdir, tree = gate.branch_dir(self.repo), gate.index_tree(self.repo)
+        page = lambda: gate_view.render(gate_view.summary(bdir, {"review": 3}, gate.view_trees(self.repo), self.repo))
+        self.assertIn("the agent is fixing this", page())
+        gate.save_json(gate.tree_dir(self.repo, tree) / "checks.json", {"verdict": "PASS"})
+        gate.save_json(gate.tree_dir(self.repo, tree) / "review.json", {"verdict": "ACCEPTED"})
+        self.assertNotIn("the agent is fixing this", page())
+        self.assertIn("You accepted or skipped a check &mdash; ready to commit", page())
+        self.assertNotIn("All passed", page())
+        (gate.tree_dir(self.repo, tree) / "review.json").unlink()
+        self.assertIn("the agent is fixing this", page())
+        gate.save_json(gate.tree_dir(self.repo, tree) / gate.USER_SKIP_FILE, {"kind": "skip-review"})
+        self.assertIn("You accepted or skipped a check", page())
+        self.assertNotIn("All passed", page())
+        self.assertIn("<li>AI code review: skipped by you</li>", page())
+
+    def test_a_set_aside_finding_on_a_deleted_file_clears(self) -> None:
+        self.assertIn("All passed", self._set_aside_page("blocker", "BAD = 1\n", file="src/pkg/deleted_since.py"))
+
+    def _rejected_plan_finding_page(self, severity: str) -> str:
+        """The page once a plan finding was rejected, with no code stamped yet."""
+        import gate_view
+
+        bdir = gate.branch_dir(self.repo)
+        _, rdir = gate.next_round(bdir / "plan")
+        finding = {"id": "P1", "severity": severity, "file": "plan.md", "line": 1, "quote": "not in any file", "why": "w",
+                   "fix": "f", "plain": "A plan problem.", "state": "rejected", "key": "k9"}
+        gate.save_json(rdir / "ingest.json", {"canary": {"result": "unavailable"}, "seconds": 1,
+                                              "results": [{"id": "plan", "status": "clean", "error": "", "findings": [finding]}]})
+        return gate_view.render(gate_view.summary(bdir, {"plan": 2}, None, self.repo))
+
+    def test_a_rejected_plan_finding_stays_listed_in_section_5_and_leaves_the_box_alone(self) -> None:
+        text = self._rejected_plan_finding_page("blocker")
+        self.assertIn("1 &middot; Changes to the original plan <span class=muted>(0)</span>", text)
+        self.assertIn("5 &middot; Findings the agent did not fix <span class=muted>(1)</span>", text)
+        self.assertNotIn("Set aside earlier, fixed since", text)
+        self.assertNotIn("did not fix 1 serious problem", text)
+
+    def test_a_rejected_plan_finding_is_never_worded_as_no_problems(self) -> None:
+        text = self._rejected_plan_finding_page("blocker")
+        self.assertIn("Nothing is blocking so far &mdash; not ready to commit yet", text)
+        self.assertIn("clean, 1 plan finding set aside", text)
+        self.assertNotIn("No problems found so far", text)
+
+    def test_a_rejected_plan_nice_to_have_is_not_counted(self) -> None:
+        self.assertNotIn("plan finding set aside", self._rejected_plan_finding_page("nit"))
+
+    def test_the_stamp_names_the_model_tier_the_reviewer_really_ran_at(self) -> None:
+        reviewers = {r.id: r for r in gate.all_reviewers(self.cfg(), self.repo)}
+        stage_dir = Path(self.tmp.name) / "stage"
+        gate.save_json(stage_dir / "round-1" / "dispatch.json", {"dispatch": [{"id": "polish", "model_tier": "strong"}]})
+        state = {"polish": {"round": "round-1"}}
+        self.assertEqual(gate.last_dispatched_model(reviewers["polish"], gate.TIER_FULL, stage_dir, state), "strong")
+        self.assertEqual(gate.last_dispatched_model(reviewers["polish"], gate.TIER_FULL, stage_dir, {}), "standard")
+
+    def test_a_plan_stop_under_the_cap_offers_the_approval_it_may_be_waiting_for(self) -> None:
+        import gate_view
+
+        bdir = gate.branch_dir(self.repo)
+        _, rdir = gate.next_round(bdir / "plan")
+        finding = {"id": "P1", "severity": "blocker", "file": "plan.md", "line": 1, "quote": "q", "why": "w", "fix": "f",
+                   "plain": "A plan problem.", "state": "open", "key": "k9"}
+        gate.save_json(rdir / "ingest.json", {"canary": {"result": "unavailable"}, "seconds": 1,
+                                              "results": [{"id": "plan", "status": "findings", "error": "", "findings": [finding]}]})
+        self.assertIn("type <b>#approve-plan</b>", gate_view.render(gate_view.summary(bdir, {"plan": 2})))
+
+    def test_run_again_promises_a_stronger_model_only_for_unread_files(self) -> None:
+        import gate_view
+
+        self._ingest([{"id": "polish", "status": "invalid", "error": "output not saved: x", "findings": []}])
+        bdir = gate.branch_dir(self.repo)
+        gate.save_json(bdir / "attempts.json", {"review": 1})
+        text = gate_view.render(gate_view.summary(bdir, {"review": 1}))
+        self.assertIn("A reviewer whose report could not be used runs again.", text)
+        self.assertIn("<b>polish</b> &mdash; its report was not saved", text)
+        self.assertNotIn("stronger AI model", text)
+
+    def test_a_plan_stop_promises_no_stronger_model(self) -> None:
+        import gate_view
+
+        bdir = gate.branch_dir(self.repo)
+        _, rdir = gate.next_round(bdir / "plan")
+        gate.save_json(rdir / "ingest.json", {"canary": {"result": "unavailable"}, "seconds": 60, "results": [
+            {"id": "plan", "status": "invalid", "error": "did not report reading ['plan.md']", "findings": []}]})
+        gate.save_json(bdir / "attempts.json", {"plan": 2})
+        text = gate_view.render(gate_view.summary(bdir, {"plan": 2}))
+        self.assertIn("That reviewer tries again.", text)
+        self.assertNotIn("stronger AI model", text)
+
+    def test_a_report_on_another_tree_is_explained_in_plain_words(self) -> None:
+        import gate_view
+
+        report = '```json\n{"reviewer": "r", "tree": "a", "checked": [], "findings": []}\n```'
+        wrong = gate.judge_output(report, "r", [], self.repo, "b", self.repo, {}, "b")
+        self.assertEqual(gate_view._plain_error(wrong["error"]), "it reviewed a different version of the code")
+        self.assertEqual(gate_view._plain_error("no JSON block"), "its report could not be read (no JSON block)")
+
+    def test_a_missed_canary_is_named_in_the_box_the_status_line_and_the_next_step(self) -> None:
+        import gate_view
+
+        self._ingest([{"id": "lean", "status": "clean", "error": "", "findings": []}], canary="missed")
+        view = gate_view.summary(gate.branch_dir(self.repo), {"review": 3})
+        text = gate_view.render(view)
+        self.assertIn("Not committed yet: the agent is fixing this", text)
+        self.assertIn("The AI reviewers missed a test bug planted to check them", text)
+        self.assertIn("<b>canary</b> &mdash; the reviewers missed the planted test bug", text)
+        self.assertIn("canary missed", gate_view.status_line(view))
+        self.assertIn("a missed canary", gate_view.next_step({**view, "plan_stamp": "PASS"}, "p.md"))
+
+    def test_under_the_cap_an_invalid_report_sends_the_next_session_back_to_the_review(self) -> None:
+        import gate_view
+
+        self._ingest([{"id": "polish", "status": "invalid", "error": "no JSON block", "findings": []}])
+        view = gate_view.summary(gate.branch_dir(self.repo), {"review": 3})
+        step = gate_view.next_step({**view, "plan_stamp": "PASS"}, "p.md")
+        self.assertIn("round-1 did not pass (an invalid report or a missed canary)", step)
+        self.assertNotIn("Stop and ask the user", step)
+
+    def test_a_skipped_check_is_not_shown_as_failed(self) -> None:
+        import gate_view
+
+        bdir = gate.branch_dir(self.repo)
+        gate.save_json(bdir / "checks" / "state.json", {"unit": {"status": "pass", "tree": "abc", "seconds": 1},
+                                                        "targeted": {"status": "skipped", "reason": "no mapped tests"}})
+        view = gate_view.summary(bdir, {"review": 3})
+        self.assertTrue(gate_view.status_line(view).endswith("checks pass (2) @abc"), gate_view.status_line(view))
+        self.assertIn("- Checks: passed on code version abc.", gate_view.handoff(view, self.repo, {}))
+        gate.save_json(bdir / "checks" / "state.json", {"targeted": {"status": "skipped", "reason": "no mapped tests"}})
+        view = gate_view.summary(bdir, {"review": 3})
+        self.assertTrue(gate_view.status_line(view).endswith("checks pass (1)"), gate_view.status_line(view))
+        self.assertIn("- Checks: passed.", gate_view.handoff(view, self.repo, {}))
+
+    def test_a_failed_push_audit_says_not_pushed_and_names_the_rule(self) -> None:
+        import gate_view
+
+        gate.save_json(gate.tree_dir(self.repo, gate.head_tree(self.repo)) / "audit-branch.json",
+                       {"hits": [{"rule": "P2 secret", "file": "x.py", "detail": "a key"}]})
+        text = gate_view.render(gate_view.summary(gate.branch_dir(self.repo), {"push": 2},
+                                                  gate.view_trees(self.repo), self.repo))
+        self.assertIn("Not pushed yet: the agent is fixing this", text)
+        self.assertIn("1 push rule failed.", text)
+        self.assertIn("<b>P2 secret</b> &mdash; x.py: a key", text)
+
+    def test_a_stage_out_of_tries_with_no_recorded_failure_still_says_so(self) -> None:
+        import gate_view
+
+        bdir = gate.branch_dir(self.repo)
+        for stage, subject in (("checks", "Not committed"), ("push", "Not pushed")):
+            with self.subTest(stage):
+                gate.save_json(bdir / "attempts.json", {stage: 2})
+                text = gate_view.render(gate_view.summary(bdir, {stage: 2}, gate.view_trees(self.repo), self.repo))
+                self.assertIn(f"{subject}: your choice is needed", text)
+                self.assertIn("failed all 2 of its tries", text)
+
+    def test_only_an_unread_files_report_moves_a_reviewer_up_a_model_tier(self) -> None:
+        reviewers = {r.id: r for r in gate.all_reviewers(self.cfg(), self.repo)}
+        stage_dir = Path(self.tmp.name) / "stage"
+        report = lambda error: gate.save_json(stage_dir / "round-1" / "ingest.json", {
+            "results": [{"id": "polish", "status": "invalid", "error": error, "findings": []}]})
+        state = {"polish": {"round": "round-1"}}
+        model = lambda rid: gate.dispatch_model(reviewers[rid], gate.TIER_FULL, stage_dir, state)
+        self.assertEqual(model("polish") if not report("did not report reading ['a.py']") else "", "strong")
+        self.assertEqual(model("polish") if not report("no JSON block") else "", "standard")
+        self.assertEqual(gate.dispatch_model(reviewers["polish"], gate.TIER_FULL, stage_dir, {}), "standard")
+
+    def test_unittest_failures_are_named_and_its_count_line_is_not(self) -> None:
+        output = ("FAIL: test_one (a.B.test_one)\nERROR: test_two (a.B.test_two)\nFAILED (failures=1, errors=1)\n"
+                  "FAILED tests/test_a.py::test_three - boom\nERROR tests/test_b.py\n"
+                  "ERROR: file or directory not found: tests/old.py\n")
+        self.assertEqual(gate.FAILED_TEST.findall(output),
+                         ["test_one", "test_two", "tests/test_a.py::test_three", "tests/test_b.py"])
+
+    def test_an_escaped_pipe_stays_in_its_divergence_cell(self) -> None:
+        import gate_view
+
+        log = Path(self.tmp.name) / "pipes.md"
+        log.write_text("| # | tag | plan said | did instead | why |\n|---|---|---|---|---|\n"
+                       "| 3 | [LOGIC] | x: str \\| None | kept x: str | caller passes None |\n")
+        self.assertEqual(gate_view.divergences(str(log))[0],
+                         {"n": "3", "tag": "[LOGIC]", "plan": "x: str | None", "did": "kept x: str", "why": "caller passes None"})
+
+    def test_a_lost_divergence_log_is_not_reported_as_no_log(self) -> None:
+        import gate_view
+
+        gone = str(Path(self.tmp.name) / "gone.md")
+        gate.save_json(gate.branch_dir(self.repo) / "run.json", {"divergence_log": gone})
+        self.assertIn(f"The divergence log file is missing: <code>{gone}</code>",
+                      gate_view.render(gate_view.summary(gate.branch_dir(self.repo), {})))
+
+    def test_one_problem_raised_on_two_lines_shows_once(self) -> None:
+        import gate_view
+
+        self.stage("src/pkg/set_aside.py", "BAD = 1\nWORSE = 2\n")
+        twins = [{"id": "R1", "severity": "blocker", "file": "src/pkg/set_aside.py", "line": n, "quote": quote, "why": "w",
+                  "fix": "f", "plain": "The judge is wrong.", "state": "rejected", "key": f"k{n}"}
+                 for n, quote in ((1, "BAD = 1"), (2, "WORSE = 2"))]
+        self._ingest([{"id": "lean", "status": "clean", "error": "", "findings": twins}])
+        text = gate_view.render(gate_view.summary(gate.branch_dir(self.repo), {"review": 3},
+                                                  gate.view_trees(self.repo), self.repo))
+        self.assertIn("did not fix 1 serious problem</h2>", text)
+        self.assertIn("<li>The judge is wrong. <i>(in 2 places)</i></li>", text)
+        self.assertIn("5 &middot; Findings the agent did not fix <span class=muted>(1)</span>", text)
+        self.assertIn("The same problem is also at <code>src/pkg/set_aside.py:2</code>.", text)
+        self.assertEqual(len(re.findall(r"<details class='card", text)), 1)
+
+    def test_a_set_aside_finding_clears_only_when_its_text_has_left_the_code(self) -> None:
+        text = self._set_aside_page("blocker", "GOOD = 1\n")
+        self.assertIn("All passed", text)
+        self.assertIn("5 &middot; Findings the agent did not fix <span class=muted>(0)</span>", text)
+        self.assertIn("Set aside earlier, fixed since", text)
+
+    def test_a_set_aside_nice_to_have_does_not_stop_all_passed(self) -> None:
+        self.assertIn("All passed", self._set_aside_page("nit", "BAD = 1\n"))
+
+    def test_a_set_aside_should_fix_stops_all_passed(self) -> None:
+        self.assertNotIn("All passed", self._set_aside_page("should-fix", "BAD = 1\n"))
+
+    def test_an_open_nit_is_listed_and_never_stops_the_box(self) -> None:
+        import gate_view
+
+        finding = {"id": "CV1", "severity": "nit", "file": "a.py", "line": 1, "quote": "x", "why": "w", "fix": "f",
+                   "plain": "A name is odd.", "state": "open", "key": "k3"}
+        self._ingest([{"id": "polish", "status": "clean", "error": "", "findings": [finding]}])
+        view = gate_view.summary(gate.branch_dir(self.repo), {"review": 3})
+        text = gate_view.render(view)
+        self.assertIn("Nothing is blocking so far", text)
+        self.assertIn("3 &middot; Found, not handled yet <span class=muted>(1)</span>", text)
+        self.assertTrue(gate_view.status_line(view).endswith("clean"), gate_view.status_line(view))
+
+    def test_an_older_bug_asks_the_user_and_is_never_shown_as_fixed(self) -> None:
+        import gate_view
+
+        finding = {"id": "C2", "severity": "should-fix", "file": "a.py", "line": 1, "quote": "x", "why": "w", "fix": "f",
+                   "plain": "An old crash.", "state": "open", "key": "k4", "older": True}
+        self._ingest([{"id": "correctness", "status": "clean", "error": "", "findings": [finding]}])
+        self._ingest([{"id": "lean", "status": "clean", "error": "", "findings": []}])
+        view = gate_view.summary(gate.branch_dir(self.repo), {"review": 3})
+        text = gate_view.render(view)
+        for part in ("Your decision: 1 older bug found", "<li>An old crash.</li>", "<b>fix them</b>", "<b>#accept-gate</b>"):
+            self.assertIn(part, text)
+        self.assertNotIn("Fixed before the next round", text)
+        self.assertIn("1 older bug for you to decide", gate_view.status_line(view))
+        self.assertIn("older bugs", gate_view.next_step({**view, "plan_stamp": "PASS"}, "p.md"))
+
+    def test_each_finding_gets_one_true_label(self) -> None:
+        import gate_view
+
+        def item(state: str = "open", severity: str = "should-fix", done: str = "", older: bool = False) -> dict:
+            return {"round": "round-1", "reviewer": "r", "id": "C1", "ref": "r#0", "severity": severity, "state": state, "file": "a.py", "line": 1,
+                    "quote": "x", "why": "w", "fix": "f", "plain": "p", "done": done, "older": older, "key": "k"}
+
+        nit, older = item(severity="nit"), item(older=True)
+        clean, unusable, another = ("clean", []), ("invalid", []), ("clean", [], "another-reviewer")
+        waiting, not_handled = "Waiting for a reviewer to confirm the fix.", "Not handled yet."
+        your_decision = "An older bug this change did not cause: your decision."
+        cases = {   # the reports of each round, whether the older bug still waits for the user, and the labels the page gives
+            "open in the last round": ([("findings", [item()])], False, [not_handled]),
+            "reported again": ([("findings", [item()]), ("findings", [item()])], False, [not_handled]),
+            "no longer reported": ([("findings", [item()]), clean], False, ["Fixed before the next round, which re-checked the code."]),
+            "unusable report after it": ([("findings", [item()]), unusable], False, [not_handled]),
+            "only another reviewer ran after it": ([("findings", [item()]), another], False, [not_handled]),
+            "fix noted, not re-checked": ([("findings", [item(done="Fixed: x")])], False, [waiting]),
+            "fix noted, unusable report": ([("findings", [item(done="Fixed: x")]), unusable], False, [waiting]),
+            "fix noted, only another reviewer ran": ([("findings", [item(done="Fixed: x")]), another], False, [waiting]),
+            "fix noted, re-checked": ([("findings", [item(done="Fixed: x")]), clean], False, ["A later round re-checked the code."]),
+            "nit, reviewer ran again": ([("clean", [nit]), clean], False, ["Nice to have; whether it was fixed was not recorded."]),
+            "nit, reviewer never ran again": ([("clean", [nit])], False, [not_handled]),
+            "nit left by the agent": ([("clean", [item(severity="nit", done="Left: x")])], False, ["Nice to have; the agent left it as it is."]),
+            "older nit": ([("clean", [item(severity="nit", older=True)])], False, [not_handled]),
+            "older bug waiting, reported twice": ([("clean", [older]), ("clean", [older])], True, [your_decision]),
+            "older bug cleared": ([("clean", [older]), clean], False, ["An older bug: fixed since, or you chose to leave it."]),
+            "rejected": ([("clean", [item(state="rejected")])], False, []),
+            "older bug rejected, raised again, waiting": ([("clean", [item(state="rejected", older=True)]),
+                                                           ("clean", [item(state="reraised", older=True)])], True, [your_decision]),
+            "older bug rejected, raised again, cleared": ([("clean", [item(state="rejected", older=True)]),
+                                                           ("clean", [item(state="reraised", older=True)]), clean], False, []),
+            "rejected, raised again, still open": ([("clean", [item(state="rejected")]), ("findings", [item(state="reraised")])],
+                                                   False, [not_handled]),
+            "rejected, raised again, then gone": ([("clean", [item(state="rejected")]), ("findings", [item(state="reraised")]), clean],
+                                                  False, []),
+        }
+        for name, (reports, waits, labels) in cases.items():
+            with self.subTest(name):
+                stages = {"plan": [], "review": [{"name": f"round-{n}", "status": "ingested", "items": items,
+                                                  "reviewers": [{"id": who[0] if who else "r", "status": status}]}
+                                                 for n, (status, items, *who) in enumerate(reports, 1)]}
+                rejected = any(f["state"] == "rejected" for report in reports for f in report[1])
+                view = {"stages": stages, "older": [{"key": "k"}] if waits else [], "set_aside": [{"key": "k"}] if rejected else []}
+                self.assertEqual(re.findall(r"Found in round-\d+\. ([^<]+)", gate_view._three_sections(view)), labels)
+
+    def test_a_nit_left_as_it_is_is_not_listed_as_a_fix(self) -> None:
+        import gate_view
+
+        finding = {"id": "N1", "severity": "nit", "file": "a.py", "line": 1, "quote": "x", "why": "w", "fix": "f",
+                   "plain": "A nit.", "state": "open", "key": "k2"}
+        rdir = self._ingest([{"id": "lean", "status": "clean", "error": "", "findings": [finding]}])
+        gate.save_json(rdir / gate_view.NOTES_FILE, {"lean#0": {"plain": "", "done": "Left as it is: on purpose."}})
+        text = gate_view.render(gate_view.summary(gate.branch_dir(self.repo), {"review": 3}))
+        self.assertIn("for your review <span class=muted>(0)</span>", text)
+        self.assertIn("3 &middot; Found, not handled yet <span class=muted>(1)</span>", text)
+        self.assertIn("Nice to have; the agent left it as it is.", text)
+
+    def test_the_dashboard_lists_every_divergence_log_row(self) -> None:
+        import gate_view
+
+        log = Path(self.tmp.name) / "log.md"
+        log.write_text("# Divergence log\nbase: abc\n\n| # | tag | plan said | did instead | why |\n|---|---|---|---|---|\n"
+                       "| 1 | [LOGIC] | `a.py` only | also `b.py` | b calls a |\n"
+                       "| 2 | [MECH] | x | y | because p | q |\n")
+        gate.save_json(gate.branch_dir(self.repo) / "run.json", {"divergence_log": str(log)})
+        view = gate_view.summary(gate.branch_dir(self.repo), {"review": 3})
+        self.assertEqual(view["divergences"][1], {"n": "2", "tag": "[MECH]", "plan": "x", "did": "y", "why": "because p | q"})
+        text = gate_view.render(view)
+        self.assertIn("4 &middot; Divergences from the plan <span class=muted>(2)</span>", text)
+        self.assertIn("<span class='badge important'>#1 LOGIC</span>also <code>b.py</code></summary>", text)
+        self.assertIn("<dt>Plan said</dt><dd><code>a.py</code> only</dd><dt>Did instead</dt><dd>also <code>b.py</code></dd>"
+                      "<dt>Why</dt><dd>b calls a</dd>", text)
+        self.assertNotIn("<table><tr><th>#</th>", text)
+        self.assertLess(text.index("id=divergences"), text.index("id=more"))
+        log.write_text("# Divergence log\nbase: abc\n\n| # | tag | plan said | did instead | why |\n|---|---|---|---|---|\n")
+        self.assertIn("None recorded in", gate_view.render(gate_view.summary(gate.branch_dir(self.repo), {})))
+        log.unlink()
+        self.assertIsNone(gate_view.divergences(str(log)))
+
+    def _ingest(self, results: list, seconds: int = 60, canary: str = "unavailable") -> Path:
+        _, rdir = gate.next_round(gate.branch_dir(self.repo) / "review")
+        gate.save_json(rdir / "ingest.json", {"canary": {"result": canary}, "seconds": seconds, "results": results})
+        return rdir
+
+    def test_invalid_reports_at_the_cap_stop_the_commit_and_say_why(self) -> None:
+        import gate_view
+
+        self._ingest([{"id": "polish", "status": "invalid", "error": "did not report reading ['a.py', 'b.py']",
+                       "findings": []}, {"id": "tests", "status": "clean", "error": "", "findings": []}])
+        bdir = gate.branch_dir(self.repo)
+        gate.save_json(bdir / "attempts.json", {"review": 3})
+        view = gate_view.summary(bdir, {"review": 3})
+        text = gate_view.render(view)
+        for part in ("Not committed: your choice is needed",
+                     "<strong>What happened:</strong> AI reviewers check the code before it can be committed. "
+                     "1 of them did not finish, so the check is not complete. "
+                     "A report that did not finish is not a problem with your code. Anything serious still open is listed below.",
+                     "<b>run again</b> (recommended) &mdash; That reviewer tries again, on a stronger AI model when there is one",
+                     "<b>polish</b> &mdash; did not read 2 of its files to the end <i>(not a code problem)</i>",
+                     "#accept-gate", "#abort"):
+            self.assertIn(part, text)
+        self.assertNotIn("Nothing for you to decide", text)
+        self.assertNotIn("<b>tests</b>", text)
+        self.assertTrue(gate_view.status_line(view).endswith("not passed: 1 invalid reports"))
+        self.assertIn("Stop and ask the user", gate_view.next_step({**view, "plan_stamp": "PASS"}, "p.md"))
+
+    def test_a_red_check_names_its_log_and_last_failing_test(self) -> None:
+        import gate_view
+
+        bdir = gate.branch_dir(self.repo)
+        gate.save_json(bdir / "checks" / "state.json", {"unit": {
+            "status": "fail", "tree": "c" * 40, "log": "/s/unit.log", "seconds": 2,
+            "failed_ids": ["tests/test_a.py::test_one", "tests/test_a.py::test_two"]}})
+        gate.save_json(bdir / "attempts.json", {"checks": 1})
+        text = gate_view.render(gate_view.summary(bdir, {"checks": 3}))
+        for part in ("Not committed yet: the agent is fixing this", "1 automatic test failed.", "Nothing is needed from you.",
+                     "<b>unit</b> &mdash; red on tree <code>cccccccccc</code>: last failing test "
+                     "<code>tests/test_a.py::test_two</code>, log <code>/s/unit.log</code>"):
+            self.assertIn(part, text)
+        self.assertNotIn("Nothing for you to decide", text)
+        gate.save_json(bdir / "attempts.json", {"checks": 3})
+        stopped = gate_view.render(gate_view.summary(bdir, {"checks": 3}))
+        for part in ("Not committed: your choice is needed", "The agent fixes the failure, then the tests run again.", "#accept-gate"):
+            self.assertIn(part, stopped)
+
+    def test_all_passed_says_ready_to_commit_then_committed(self) -> None:
+        import gate_view
+
+        self._ingest([{"id": "tests", "status": "clean", "error": "", "findings": []}])
+        index, head = gate.index_tree(self.repo), gate.head_tree(self.repo)
+        self.assertEqual(index, head)
+        for stage in ("review", "checks"):
+            gate.save_json(gate.tree_dir(self.repo, index) / f"{stage}.json", {"verdict": "PASS"})
+        bdir = gate.branch_dir(self.repo)
+        text = gate_view.render(gate_view.summary(bdir, {"review": 3}, {"index": index, "head": head}))
+        self.assertIn("All passed &mdash; committed", text)
+        self.assertIn(f"<li>AI code review: passed on the current files (version <code>{index[:10]}</code>)</li>", text)
+        self.assertIn("<li>Final check before pushing: not run yet</li>", text)
+        self.stage("src/pkg/new.py", "x = 1\n")
+        staged = gate.index_tree(self.repo)
+        for stage in ("review", "checks"):
+            gate.save_json(gate.tree_dir(self.repo, staged) / f"{stage}.json", {"verdict": "PASS"})
+        text = gate_view.render(gate_view.summary(bdir, {"review": 3}, gate.view_trees(self.repo)))
+        self.assertIn("All passed &mdash; ready to commit", text)
+        gate.save_json(gate.tree_dir(self.repo, staged) / "audit-staged.json",
+                       {"hits": [{"rule": "H1 unplanned", "file": "src/pkg/new.py", "detail": "not in the plan"}]})
+        text = gate_view.render(gate_view.summary(bdir, {"review": 3}, gate.view_trees(self.repo)))
+        self.assertIn("<ul><li><b>H1 unplanned</b> &mdash; src/pkg/new.py: not in the plan", text)
+
+    def test_rejected_findings_show_with_the_agents_reason(self) -> None:
+        import gate_view
+
+        finding = {"id": "L1", "severity": "should-fix", "file": "a.py", "line": 1, "why": "dead code",
+                   "state": "rejected", "key": "k1"}
+        rdir = self._ingest([{"id": "lean", "status": "clean", "error": "", "findings": [finding]}])
+        gate.save_json(rdir.parent / gate_view.REJECTIONS_FILE, {"k1": {"round": rdir.name, "cite": "a.py:9",
+                                                                       "reason": "it is called at a.py:9"}})
+        self._ingest([{"id": "lean", "status": "clean", "error": "", "findings": []}])
+        text = gate_view.render(gate_view.summary(gate.branch_dir(self.repo), {"review": 3}))
+        self.assertIn("5 &middot; Findings the agent did not fix <span class=muted>(1)</span>", text)
+        self.assertIn("The agent's reason: it is called at a.py:9 (cites <code>a.py:9</code>).", text)
+        # Section 5 is the only place it shows, so the page has one card for it, and its id names that section.
+        ids = re.findall(r"<details class='card[^']*' id='([^']+)'", text)
+        self.assertEqual(ids, ["rejected-round-1-lean#0"])
 
     def test_main_refreshes_the_view_and_never_fails_on_it(self) -> None:
         out, err = io.StringIO(), io.StringIO()
@@ -1024,13 +1723,14 @@ class TestedTableTest(RepoCase):
             {"id": "smoke", "kind": "real", "status": "skipped", "reason": "max_usd = 0, real runs off (unverified)"}]}
         review = {"tier": "standard", "verdict": "PASS", "selected": [{"id": "lean"}], "open_nits": [],
                   "rounds": [{"round": "round-1", "canary": {"result": "caught"}, "seconds": 40, "blocking_found": 1}]}
-        table = gate.tested_table(self.cfg(), "b" * 40, checks, review, {"kind": "skip-review", "at": "t"})
-        self.assertIn("gate time 103s", table)
-        self.assertIn("suite: FAIL [base fails too]", table)
-        self.assertIn("| real | — | n/a (smoke: max_usd = 0", table)
-        self.assertIn("| review | 1 reviewers, 1 rounds, canary round-1: caught, 40s |", table)
-        self.assertIn("| user skip | skip-review", table)
-        self.assertIn("| not verified | smoke;", table)
+        text = gate.tested_summary(self.cfg(), "b" * 40, checks, review, {"kind": "skip-review", "at": "t"})
+        lines = text.splitlines()
+        self.assertEqual(lines[0], "How it was tested (tree bbbbbbbbbb, gate time 103s):")
+        self.assertEqual(lines[1], "- unit: unit PASS 3s, suite FAIL [base fails too] 60s, log s.log")
+        self.assertEqual(lines[2], "- review: PASS, 1 reviewers, 1 rounds, 1 blocking found and resolved, 0 nits open")
+        self.assertEqual(lines[3], "- missing: real (smoke: max_usd = 0, real runs off (unverified)); skip-review (skipped "
+                                   "at your request); no check declared for mechanical, dry-run, ui")
+        self.assertEqual(len(lines), 4)
 
 
 class RejectTest(RepoCase):
@@ -1145,11 +1845,29 @@ class SummaryTest(RepoCase):
         self.assertIn("| unit | unit | @code matched | pass |", text)
         self.assertIn("Leftovers (untracked, not committed; clean up): notes.txt", text)
 
-    def test_every_kind_listed_when_nothing_ran(self) -> None:
-        table = gate.tested_table(self.cfg(), "a" * 40, None, None, None)
-        for kind in self.cfg()["report_kinds"]:
-            self.assertIn(f"| {kind} |", table)
-        self.assertIn("| not verified |", table)
+    def test_the_divergences_stay_out_of_the_session_and_the_mr(self) -> None:
+        def summary(*flags: str) -> str:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                gate.cmd_summary(gate.build_parser().parse_args(["summary", "--repo", str(self.repo), *flags]))
+            return out.getvalue()
+
+        log = Path(self.tmp.name) / "log.md"
+        log.write_text("| # | tag | plan said | did instead | why |\n|---|---|---|---|---|\n| 1 | [MECH] | p | d | w |\n")
+        gate.save_json(gate.branch_dir(self.repo) / "run.json", {"divergence_log": str(log)})
+        self.assertIn("How it was tested", summary("--tested"))
+        self.assertNotIn("Divergences", summary("--tested"))
+        self.assertNotIn("Divergences", summary())
+
+    def test_a_trimmed_cell_closes_the_code_span_it_cut(self) -> None:
+        import gate_view
+
+        self.assertEqual(gate_view.trim_cell("short", 12), "short")
+        self.assertEqual(gate_view.trim_cell("see `a very long path name`", 12), "see `a very` …")
+
+    def test_nothing_ran_says_what_is_missing_and_lists_no_kinds(self) -> None:
+        text = gate.tested_summary(self.cfg(), "a" * 40, None, None, None)
+        self.assertEqual(text.splitlines()[1:], ["- missing: checks (no checks stamp); review (no review stamp)"])
 
 
 if __name__ == "__main__":
