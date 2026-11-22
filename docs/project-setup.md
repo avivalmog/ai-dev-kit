@@ -42,7 +42,7 @@ shared limit. Example: [`examples/project/reviewers/gates.toml`](../examples/pro
 | `[commit] junk_patterns` | more files that must never be committed |
 | `[push] forbid_paths` | more files that must never be pushed |
 | `[[reviewer]]` | a project reviewer (below) |
-| `[[checks]]` | a project check: `id`, `kind` (`mechanical`, `unit`, `dry-run`, `ui`, `real`), `when` globs, `run`, optional `last = true` for the full suite |
+| `[[checks]]` | a project check: `id`, `kind` (`mechanical`, `unit`, `dry-run`, `ui`, `real`), `when` globs, `run`, optional `last = true` for the full suite. Every gated review round waits for the `mechanical`, `unit` and `dry-run` checks that aren't `last`, so give a slow test command `last = true` |
 
 Once a project declares any `[[checks]]`, they replace the shared fallback `pytest -q`.
 

@@ -38,7 +38,7 @@ feature: <what it does, its default, where it shows up. Out of scope: ...>
 | 2 | **plan gate** | `/gate plan` | `review-plan` P1–P7: coverage, traceability, proportionality, reuse, **consumer sweep**, project rules, unproven claims. No reviewer for a docs-only plan | S `core/reviewers/plan.md`; P `doc_maps` | 2 attempts |
 | 3 | implement | `implement-plan` | TDD, divergence log; **tripwire** = project reviewers of a risky file, once, right after the first edit to it | S `implement-plan`; P `always_when`, `[[reviewer]]` | — |
 | 4 | **review** (every reviewer in one round; real defects block) | `/gate review` | Fidelity, correctness, polish (lean + conventions + magic values), docs-drift, tests, data-schema (stored data and queries only) and project reviewers run together, once. A real defect (`blocker` or `should-fix`) stops the commit; a nit (naming, constants, style, duplication) is only listed. An older bug the change did not cause costs no attempt and waits for your decision, unless it is a should-fix first spotted on a re-review, on unchanged lines: that one is only listed. A re-review sees only what changed since that reviewer's last valid review, reports only what those changes break, and runs at the standard model at most | S `core/reviewers/*.md`; P `reviewers/*.md` + rules docs | 5 attempts per reviewer |
-| 5 | **checks** (starts with 4) | `/gate checks` | mechanical → unit (targeted) → dry run → UI → real (only if `max_usd` > 0) → full suite last, once. Never fixed by weakening a check | S runner; P `[[checks]]` | 3 attempts |
+| 5 | **checks** (fast ones before every round of 4, the rest alongside it) | `/gate checks` | mechanical → unit (targeted) → dry run → UI → real (only if `max_usd` > 0) → full suite last, once. A gated review round waits for mechanical, unit and dry run (not `last`) to pass on its code. Never fixed by weakening a check | S runner; P `[[checks]]` | 3 attempts |
 | 6 | commit | hook | review + checks stamps for the staged tree; hygiene H1–H5 | S `gate_guard.py`, `gate.py audit --mode staged` | — (blocked until fixed; a fix that changes code reruns the touched review and checks) |
 | 7 | **push / MR** | `/gate push` | every commit on the branch: hygiene, forbidden paths, secrets; base moved ⇒ affected checks re-run on the merge; the hook re-checks every stamp | S `gate.py audit --mode branch`, `gate_guard.py` | 2 attempts |
 | end | MR open | — | the MR body has: implement-plan's summary, the reviewer list with reasons, **How it was tested** | — | merge is yours |
@@ -137,7 +137,7 @@ tiers = ["standard", "full"]          # default; model = "standard" default (a m
 
 [[checks]]
 id = "unit-targeted"
-kind = "unit"                         # mechanical | unit | dry-run | ui | real
+kind = "unit"                         # mechanical | unit | dry-run (a review round waits for these unless last) | ui | real
 when = ["src/**", "tests/**"]
 run = ".venv/bin/python -m pytest -q {targeted_tests}"   # also {run_dir}, {root}
 last = false                          # true: must pass on exactly the final tree

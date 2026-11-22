@@ -100,6 +100,10 @@ A passing plan stamp prints `handoff:` (see Register the run); the plan's path i
 ## /gate review
 
 1. `git add <explicit paths>`. Never `-A`, `.`, `-u` or a directory; the hook blocks them.
+   For a gated round (not `--tripwire` or `--only`), then run `$G checks-run --repo "$R" --fast`: the
+   mechanical, unit and dry-run checks that aren't `last`, so no reviewer reads code that fails its tests.
+   A red one ⇒ fix the code as in `/gate checks` step 2, re-stage, run it again. `review-prepare` refuses
+   while one is not passing for this tree, unless the user accepted the checks stamp for it.
 2. `$G review-prepare --repo "$R"`. Only reviewers whose scope changed since they were last clean are
    dispatched; a `note` ⇒ go to step 6. These rules keep rounds short:
    - **One round.** Every selected reviewer is dispatched together, once.
@@ -130,7 +134,7 @@ A passing plan stamp prints `handoff:` (see Register the run); the plan's path i
    - Either way, tell the dashboard: `$G note --repo "$R" --finding <reviewer>#<n> --done "<Fixed: what
      changed, in easy English>"` (or "Rejected: why"). Add `--plain "<what goes wrong, easy English>"`
      when the reviewer's `plain` line is missing or unclear. Dashboard-only; it changes no decision.
-5. Re-stage the fixed paths, back to step 2.
+5. Re-stage the fixed paths, back to step 1.
 6. `$G stamp --repo "$R" --stage review`.
 
 `--tripwire` (from implement-plan, right after the first edit to a risky file): only the project
@@ -145,8 +149,9 @@ and the report must say the review is unproven.
 
 1. `$G checks-run --repo "$R"`. It runs every selected check that is not passing for this tree, in
    order (mechanical, unit, dry-run, ui, real, then `last`), and stops later groups after a failure.
-   Start it in the background (Claude Code: `run_in_background`) while the review round runs; both re-run
-   only what a fix touched.
+   The fast ones already passed before the review round (`/gate review` step 1), so start it in the
+   background (Claude Code: `run_in_background`) while the review round runs; both re-run only what a
+   fix touched.
 2. A red check ⇒ read its log and fix **the code**. Never skip, xfail, loosen, delete or mock away a
    check or an assertion.
    A red check always blocks, even when base is red too. To learn whose failure it is,

@@ -88,6 +88,16 @@ class RepoCase(unittest.TestCase):
         t = gate.staged_target(self.repo, cfg)
         return gate.compute_tier(cfg, t.files, t.lines, lambda f: gate.ast_neutral(self.repo, t.start, t.end, f))[0]
 
+    def pass_fast_checks(self) -> None:
+        """Record every fast check due on the staged tree as passing, as a green `checks-run --fast` would."""
+        cfg = self.cfg()
+        target = gate.staged_target(self.repo, cfg)
+        path = gate.branch_dir(self.repo) / "checks" / "state.json"
+        state = gate.load_json(path, {})
+        for c in gate.checks_due(self.repo, cfg, target, state, fast_only=True):
+            state[c.id] = {"pass_tree": target.end, "status": gate.STATUS_PASS, "tree": target.end}
+        gate.save_json(path, state)
+
 
 class GlobTest(unittest.TestCase):
     def test_semantics(self) -> None:
@@ -380,6 +390,7 @@ class DeltaReviewTest(RepoCase):
         self.stage_dir = gate.branch_dir(self.repo) / "review"
 
     def prepare(self) -> dict:
+        self.pass_fast_checks()
         with contextlib.redirect_stdout(io.StringIO()):
             gate.cmd_review_prepare(gate.build_parser().parse_args(["review-prepare", "--repo", str(self.repo)]))
         return gate.load_json(gate.latest_round(self.stage_dir, None) / "dispatch.json", {})
@@ -876,6 +887,7 @@ class ChecksAndStampsTest(RepoCase):
                 r.source[0].write_text(f"---\nname: review-{r.id}\n---\nbody of {r.id}\n")
                 record[r.id] = {"sha": gate.calibration_hash(r)}
         gate.save_json(gate.SHARED_CALIBRATION / "calibrated.json", record)
+        self.pass_fast_checks()
         args = gate.build_parser().parse_args(["review-prepare", "--repo", str(self.repo)])
         self.assertEqual(gate.cmd_review_prepare(args), gate.EXIT_OK)
         return gate.load_json(gate.latest_round(gate.branch_dir(self.repo) / "review", None) / "dispatch.json", {})
@@ -919,6 +931,102 @@ class ChecksAndStampsTest(RepoCase):
         tier, reason = gate.branch_tier(self.repo, cfg, t)
         self.assertEqual(tier, "full")
         self.assertIn("plan gate predicted", reason)
+
+
+class FastChecksBeforeReviewTest(RepoCase):
+    """A gated review round waits for the fast checks; ui, real and the `last` suite never hold it."""
+
+    CHECKS = ('[[checks]]\nid = "fast"\nkind = "{kind}"\nwhen = ["**"]\nrun = "{run}"\n'
+              '[[checks]]\nid = "ui"\nkind = "ui"\nwhen = ["**"]\nrun = "false"\n'
+              '[[checks]]\nid = "real"\nkind = "real"\nwhen = ["**"]\nrun = "false"\n'
+              '[[checks]]\nid = "suite"\nkind = "unit"\nwhen = ["**"]\nlast = true\nrun = "false"\n')
+    TRIPWIRE = ('[tiers.full]\nalways_when = ["src/pkg/mod.py"]\n[[reviewer]]\nid = "mod-rules"\nstage = "logic"\n'
+                'kind = "rules"\nrules = ["docs/guide.md"]\napplies_to = ["src/**"]\n')
+
+    def setUp(self) -> None:
+        super().setUp()
+        gate.REVIEWERS_DIR.mkdir(parents=True)
+        for r in gate.all_reviewers(self.cfg(), self.repo):
+            if r.origin == "shared":
+                r.source[0].write_text(f"---\nname: review-{r.id}\n---\nbody\n")
+
+    def change(self, run: str, kind: str = "unit", extra: str = "") -> None:
+        """Stage a code change under a project whose `fast` check is of `kind` and runs `run`."""
+        self.stage("reviewers/gates.toml", "version = 1\n" + self.CHECKS.format(kind=kind, run=run) + extra)
+        self.stage("src/pkg/mod.py", "def f(x):\n    return x * 3\n")
+
+    def checks_run(self, *extra: str) -> int:
+        with contextlib.redirect_stdout(io.StringIO()):
+            return gate.cmd_checks_run(gate.build_parser().parse_args(["checks-run", "--repo", str(self.repo), *extra]))
+
+    def prepare(self, *extra: str) -> int:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return gate.cmd_review_prepare(gate.build_parser().parse_args(["review-prepare", "--repo", str(self.repo), *extra]))
+
+    def test_a_red_fast_check_holds_the_round_without_using_a_review_attempt(self) -> None:
+        self.change("false")
+        self.assertEqual(self.checks_run("--fast"), gate.EXIT_FAIL)
+        with self.assertRaises(gate.GateError) as ctx:
+            self.prepare()
+        self.assertIn("fast (fail)", str(ctx.exception))
+        self.assertFalse((gate.branch_dir(self.repo) / "review").exists())
+        self.assertNotIn("review", gate.load_json(gate.branch_dir(self.repo) / "attempts.json", {}))
+
+    def test_every_fast_kind_holds_the_round_and_no_slow_one_does(self) -> None:
+        for kind in ("mechanical", "unit", "dry-run"):
+            with self.subTest(kind=kind):
+                self.change("true", kind=kind)
+                with self.assertRaises(gate.GateError) as ctx:
+                    self.prepare()
+                self.assertIn("fast (not run on this tree)", str(ctx.exception))
+                for slow in ("ui", "real", "suite"):
+                    self.assertNotIn(f"{slow} (", str(ctx.exception))
+
+    def test_fast_runs_only_what_the_round_waits_for_and_red_slow_checks_do_not_hold_it(self) -> None:
+        self.change("true")
+        self.assertEqual(self.checks_run("--fast"), gate.EXIT_OK)
+        self.assertEqual(sorted(gate.load_json(gate.branch_dir(self.repo) / "checks" / "state.json", {})), ["fast"])
+        self.assertEqual(self.prepare(), gate.EXIT_OK)
+
+    def test_a_fix_in_the_checks_scope_needs_them_again(self) -> None:
+        self.change("true")
+        self.checks_run("--fast")
+        self.stage("src/pkg/mod.py", "def f(x):\n    return x * 4\n")
+        with self.assertRaises(gate.GateError) as ctx:
+            self.prepare()
+        self.assertIn("fast (not run on this tree)", str(ctx.exception))
+
+    def test_a_tripwire_round_does_not_wait(self) -> None:
+        self.change("false", extra=self.TRIPWIRE)
+        self.checks_run("--fast")
+        self.assertEqual(self.prepare("--tripwire"), gate.EXIT_OK)
+        dispatch = gate.load_json(gate.latest_round(gate.branch_dir(self.repo) / gate.TRIPWIRE_DIR, None) / "dispatch.json", {})
+        self.assertEqual([e["id"] for e in dispatch["dispatch"]], ["mod-rules"])
+
+    def test_a_round_with_every_reviewer_clean_does_not_wait(self) -> None:
+        self.change("false")
+        cfg = self.cfg()
+        target = gate.staged_target(self.repo, cfg)
+        _, _, picks = gate.review_selection(self.repo, cfg, target, gate.argparse.Namespace(only=None, tripwire=False))
+        gate.save_json(gate.branch_dir(self.repo) / "review" / "state.json",
+                       {r.id: {"clean_tree": target.end} for r, p in picks if p.selected})
+        self.assertEqual(self.prepare(), gate.EXIT_OK)
+
+    def test_an_accepted_checks_stamp_lets_the_round_run(self) -> None:
+        self.change("false")
+        self.checks_run("--fast")
+        gate.TOKENS_DIR.mkdir(parents=True, exist_ok=True)
+        (gate.TOKENS_DIR / "accept-gate.json").write_text(json.dumps({"created": time.time(), "session": "s"}))
+        with contextlib.redirect_stdout(io.StringIO()):
+            gate.cmd_stamp(gate.build_parser().parse_args(["stamp", "--repo", str(self.repo), "--stage", "checks", "--accept"]))
+        self.assertEqual(self.prepare(), gate.EXIT_OK)
+
+    def test_an_only_round_does_not_wait(self) -> None:
+        self.change("false")
+        self.checks_run("--fast")
+        self.assertEqual(self.prepare("--only", "rules:docs/guide.md"), gate.EXIT_OK)
+        self.assertTrue(gate.load_json(gate.latest_round(gate.branch_dir(self.repo) / gate.ADHOC_DIR, None) / "dispatch.json",
+                                       {})["dispatch"])
 
 
 class FreshnessPlanCalibrationTest(RepoCase):
@@ -1049,6 +1157,7 @@ class FreshnessPlanCalibrationTest(RepoCase):
         for r in gate.all_reviewers(self.cfg(), self.repo):
             if r.origin == "shared":
                 r.source[0].write_text(f"---\nname: review-{r.id}\n---\nbody\n")
+        self.pass_fast_checks()
         args = gate.build_parser().parse_args(["review-prepare", "--repo", str(self.repo)])
         err = io.StringIO()
         with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):

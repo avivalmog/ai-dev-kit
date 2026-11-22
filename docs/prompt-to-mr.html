@@ -365,6 +365,7 @@ the button sits next to "Download JSON". Out of scope: Excel files.</pre>
         <div class="stage-body">
           <ol class="steps">
             <li><b>Stage by name.</b> <code>git add &lt;explicit paths&gt;</code>; <code>-A</code>, <code>.</code>, <code>-u</code> and directories are blocked.</li>
+            <li><b>Fast checks first.</b> <code>checks-run --fast</code> runs the mechanical, unit and dry-run checks. <code>review-prepare</code> refuses until each one passes on this code (unless you accepted its checks stamp), so no reviewer spends a round on code that fails its tests.</li>
             <li><b>Select.</b> <code>review-prepare</code> picks reviewers from the diff against the merge-base (see <a href="#selection">What runs, and why</a>) and skips any reviewer still clean for its scope.</li>
             <li><b>Dispatch.</b> Every selected reviewer starts at once in a fresh read-only worker, at its model tier. Its prompt is one line pointing at the file <code>gate.py</code> wrote; the agent adds nothing, summarizes nothing.</li>
             <li><b>Save verbatim.</b> Each reply is saved unchanged to its <code>out</code> file before anyone acts on it.</li>
@@ -398,7 +399,7 @@ the button sits next to "Download JSON". Out of scope: Excel files.</pre>
           <div>
             <h2>Checks gate</h2>
             <div class="who"><span class="chip c-engine">gate.py</span><span class="chip c-agent">Agent</span></div>
-            <p class="what">The project's real commands run against the tree. Starts in the background alongside the review round.</p>
+            <p class="what">The project's real commands run against the tree. The fast ones (mechanical, unit, dry run) pass before each review round; the rest run in the background alongside it.</p>
           </div>
         </div>
         <div class="stage-body">

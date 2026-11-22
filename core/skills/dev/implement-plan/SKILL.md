@@ -90,6 +90,7 @@ The only hard stops that remain: a destructive, irreversible, or outward-facing 
 ## Phase 2 — Reviewer loop (the gate)
 
 Only when a `reviewer` argument was given. The `gate` skill owns the whole loop:
+- the fast checks (mechanical, unit, dry run) that must pass before each gated round (not the tripwire);
 - selection;
 - one parallel round;
 - verbatim outputs;

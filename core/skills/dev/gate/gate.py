@@ -69,6 +69,7 @@ TRIPWIRE_DIR, ADHOC_DIR = "tripwire", "adhoc"   # review rounds that never count
 RUN_DIR_TREE_LEN = 12                      # tree id prefix naming a checks run dir
 SEVERITIES = ("blocker", "should-fix", "nit")
 KIND_ORDER = ("mechanical", "unit", "dry-run", "ui", "real")
+FAST_KINDS = ("mechanical", "unit", "dry-run")   # must pass before a review round; ui, real and `last` run beside it
 STAGE_LOGIC = "logic"
 STAGES = (STAGE_PLAN, STAGE_LOGIC, "quality")      # a reviewer's stage
 REVIEW_STAGES = (STAGE_LOGIC, "quality")
@@ -522,6 +523,10 @@ class Check:
     def group(self) -> int:
         """Run order: kind order, `last` checks after everything else."""
         return len(KIND_ORDER) if self.last else KIND_ORDER.index(self.kind)
+
+    def fast(self) -> bool:
+        """A check a review round waits for: a fast kind, and not the `last` full suite."""
+        return self.kind in FAST_KINDS and not self.last
 
 
 @dataclass
@@ -1120,8 +1125,20 @@ def rereview_note(base: str, prior: list[dict[str, Any]]) -> str:
             .replace("{{PRIOR_FINDINGS}}", "\n".join(items) or "None."))
 
 
+def fast_checks_waiting(repo: Path, cfg: dict[str, Any], target: Target) -> list[str]:
+    """Fast checks not passing for this tree, each with its status; none once the user accepted its checks stamp."""
+    if load_json(tree_dir(repo, target.end) / f"{STAGE_CHECKS}.json", {}).get("verdict") in PASSING:
+        return []
+    state = load_json(branch_dir(repo) / STAGE_CHECKS / "state.json", {})
+    out = []
+    for c in checks_due(repo, cfg, target, state, fast_only=True):
+        entry = state.get(c.id, {})
+        out.append(f"{c.id} ({entry['status'] if entry.get('tree') == target.end else 'not run on this tree'})")
+    return out
+
+
 def cmd_review_prepare(args: argparse.Namespace) -> int:
-    """Select reviewers, skip the ones still clean, write prompts for one parallel round."""
+    """Select reviewers, skip the ones still clean, write prompts for one parallel round once the fast checks pass."""
     repo = repo_root(args.repo)
     cfg = load_config(repo)
     target = staged_target(repo, cfg)
@@ -1150,6 +1167,10 @@ def cmd_review_prepare(args: argparse.Namespace) -> int:
         print(json.dumps(result, indent=2))
         return EXIT_OK
     if stage_dir.name == STAGE_REVIEW:
+        waiting = fast_checks_waiting(repo, cfg, target)
+        if waiting:
+            raise GateError(f"fast checks not passing for this tree: {', '.join(waiting)}. "
+                            "Run `checks-run --fast` and fix the code before a review round.")
         check_cap(repo, STAGE_REVIEW, cfg)
     n, round_dir = next_round(stage_dir)
     diff_path = round_dir / "diff.patch"
@@ -1548,27 +1569,36 @@ def check_clean(repo: Path, c: Check, entry: dict[str, Any] | None, current: str
     return still_clean(repo, entry["pass_tree"], current, expand_globs(c.when, cfg["globs"]))
 
 
+def checks_due(repo: Path, cfg: dict[str, Any], target: Target, state: dict[str, Any],
+               fast_only: bool = False) -> list[Check]:
+    """Selected checks not yet passing for this tree, in run order; `fast_only` keeps the ones a review waits for."""
+    tier, _ = branch_tier(repo, cfg, target)
+    return [c for c, p in pick_checks(cfg, target.files, tier)
+            if p.selected and (c.fast() or not fast_only) and not check_clean(repo, c, state.get(c.id), target.end, cfg)]
+
+
 def cmd_checks_run(args: argparse.Namespace) -> int:
-    """Run every selected check not yet passing for this tree, in kind order; stop later groups on a failure."""
+    """Run every selected check not yet passing for this tree, in kind order; stop later groups on a failure.
+
+    With `--fast`, only the ones a gated review round waits for (`Check.fast`)."""
     repo = repo_root(args.repo)
     cfg = load_config(repo)
     target = staged_target(repo, cfg)
     if args.baseline:
         return run_baseline(repo, cfg, args.baseline, target)
-    tier, _ = branch_tier(repo, cfg, target)
     state_path = branch_dir(repo) / STAGE_CHECKS / "state.json"
     state = load_json(state_path, {})
-    todo = [(c, p) for c, p in pick_checks(cfg, target.files, tier)
-            if p.selected and not check_clean(repo, c, state.get(c.id), target.end, cfg)]
+    todo = checks_due(repo, cfg, target, state, fast_only=args.fast)
     if not todo:
-        print("every selected check passes for this tree; run `stamp --stage checks`")
+        print("every selected fast check passes for this tree; run `review-prepare`" if args.fast
+              else "every selected check passes for this tree; run `stamp --stage checks`")
         return EXIT_OK
     check_cap(repo, STAGE_CHECKS, cfg)
     run_dir = branch_dir(repo) / STAGE_CHECKS / "run" / target.end[:RUN_DIR_TREE_LEN]
     run_dir.mkdir(parents=True, exist_ok=True)
     failed_group: int | None = None
     ok = True
-    for c, _ in todo:
+    for c in todo:
         log = tree_dir(repo, target.end) / STAGE_CHECKS / f"{c.id}.log"
         if failed_group is not None and c.group() > failed_group:
             print(f"- {c.id}: not run, an earlier group failed")
@@ -2376,6 +2406,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--round", type=int)
     p = add("checks-run", cmd_checks_run, "run the selected checks")
     p.add_argument("--baseline", help="re-run this failing check on a clean base worktree")
+    p.add_argument("--fast", action="store_true", help="only the mechanical, unit and dry-run checks that aren't `last`: what a review round waits for")
     p = add("audit", cmd_audit, "commit hygiene (staged) or pre-push audit (branch)")
     p.add_argument("--mode", choices=(AUDIT_STAGED, AUDIT_BRANCH), required=True)
     p.add_argument("--fetch", action="store_true", help="fetch the base before the freshness check")
